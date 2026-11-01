@@ -9,7 +9,7 @@
 
 ## 다운로드
 
-[Release 페이지](https://github.com/Lilly-Lily/lilly-scripts/releases/tag/WWMI-DX12-Toggle-v1.0)에서 `WWMI-DX12-Toggle.zip`을 받을 수 있음.
+[Release 페이지](https://github.com/Lilly-Lily/lilly-scripts/releases?q=WWMI-DX12-Toggle)에서 가장 최신 버전의 `WWMI-DX12-Toggle-v버전.zip`(예: `WWMI-DX12-Toggle-v1.0.zip`) 파일을 받을 수 있음. `Source code`는 저장소 전체 사본이므로 받지 말 것.
 
 ## 주요 기능
 
