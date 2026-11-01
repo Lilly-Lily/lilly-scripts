@@ -24,7 +24,7 @@
 
 ## 사용법
 
-1. 이 폴더(`wwmi_dx12_toggle.bat`, `wwmi_dx12_toggle.ps1`)를 아무 곳에나 둠.
+1. [Releases](https://github.com/Lilly-Lily/lilly-scripts/releases/tag/WWMI-DX12-Toggle-v1.0)에서 `WWMI-DX12-Toggle-v1.0.zip`을 받아 압축을 풀고, 안의 파일(`wwmi_dx12_toggle.bat`, `wwmi_dx12_toggle.ps1`)을 아무 곳에나 둠.
 2. 인터넷에서 받은 파일이면 두 파일 각각 우클릭 → 속성 → 하단의 **차단 해제**에 체크 후 확인.
 3. **게임을 완전히 종료**한 상태에서 `wwmi_dx12_toggle.bat`을 실행.
 4. 처음 실행하면 명조 경로를 고르는 화면이 나옴. 번호를 입력해서 선택하거나 마지막 번호(직접 입력)를 골라 경로를 붙여넣음.

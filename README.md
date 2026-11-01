@@ -15,6 +15,7 @@
 | [WW-Cache-Cleaner](WW-Cache-Cleaner/) | 다중 클라이언트용 셰이더 캐시 정리 (게임·그래픽 드라이버·DirectX·Steam) | 필요 |
 | [WW-IMG-QuickEdit](WW-IMG-QuickEdit/) | 스크린샷 UID 자동 가리기, 크롭·리사이즈·포맷 변환 | 필요 없음 |
 | [WW-INI-Manager](WW-INI-Manager/) | 클라이언트별 `Engine.ini` 백업·삭제·이식·복원 | 필요 없음 (설치 위치에 따라 필요) |
+| [WWMI-DX12-Toggle](WWMI-DX12-Toggle/) | WWMI-DX12 파일을 백업 폴더로 옮겼다가 되돌려 껐다 켜기 ([Release](https://github.com/Lilly-Lily/lilly-scripts/releases/tag/WWMI-DX12-Toggle-v1.0)) | 필요 없음 (설치 위치에 따라 필요) |
 
 ## 일반 도구
 
