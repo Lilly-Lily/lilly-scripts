@@ -12,7 +12,7 @@
 - **Off**: `Win64`의 WWMI-DX12 파일을 백업 폴더로 이동
 - **On**: 백업 폴더의 파일을 `Win64`로 복원
 - **상태 표시**: `Win64`와 백업에 각각 어떤 항목이 있는지 보여주고 현재 상태(On / Off)를 판정
-- **ReShade 세트 포함 여부 전환**: `dxgi.dll` 등 ReShade 파일을 함께 옮길지 메뉴에서 선택
+- **ReShade 설정·셰이더 포함 여부 전환**: `ReShade.ini`, 셰이더 폴더 등을 함께 옮길지 메뉴에서 선택
 - **명조 경로 자동 탐색 / 변경**: Steam 라이브러리 등에서 설치 경로를 찾아 번호로 선택하게 하고, 직접 입력도 지원
 
 ## 요구 사항
@@ -24,7 +24,7 @@
 
 ## 사용법
 
-1. [Releases](https://github.com/Lilly-Lily/lilly-scripts/releases/tag/WWMI-DX12-Toggle-v1.0)에서 `WWMI-DX12-Toggle-v1.0.zip`을 받아 압축을 풀고, 안의 파일(`wwmi_dx12_toggle.bat`, `wwmi_dx12_toggle.ps1`)을 아무 곳에나 둠.
+1. 이 폴더(`wwmi_dx12_toggle.bat`, `wwmi_dx12_toggle.ps1`)를 아무 곳에나 둠.
 2. 인터넷에서 받은 파일이면 두 파일 각각 우클릭 → 속성 → 하단의 **차단 해제**에 체크 후 확인.
 3. **게임을 완전히 종료**한 상태에서 `wwmi_dx12_toggle.bat`을 실행.
 4. 처음 실행하면 명조 경로를 고르는 화면이 나옴. 번호를 입력해서 선택하거나 마지막 번호(직접 입력)를 골라 경로를 붙여넣음.
@@ -37,7 +37,7 @@
 | `1` | **Off**: WWMI-DX12를 백업 폴더로 옮김 |
 | `2` | **On**: 백업에서 `Win64`로 되돌림 |
 | `3` | 명조 경로 변경 |
-| `4` | ReShade 포함 여부 전환 (포함 ↔ 제외) |
+| `4` | ReShade 설정·셰이더 포함 여부 전환 (포함 ↔ 제외) |
 | 그 외 | 아무것도 하지 않고 닫기 |
 
 ### 인자로 바로 실행
@@ -78,15 +78,17 @@ WWMI-DX12 가 설치된 명조 경로를 선택해 주세요.
 | 대상 | 설명 |
 | --- | --- |
 | `wwmi_dx12*` | `wwmi_dx12.addon64`, `wwmi_dx12` 폴더, `wwmi_dx12.ini`, 실행 bat/ps1, 로그 등 이름이 `wwmi_dx12`로 시작하는 모든 항목 |
-| `dxgi.dll`, `ReShade.ini`, `ReShadePreset.ini`, `ReShade.log`, `reshade-shaders` | ReShade 세트. **포함** 설정일 때만 옮기며, 있는 것만 옮김 |
+| `dxgi.dll` | WWMI-DX12가 ReShade를 불러오는 데 쓰는 파일. **항상** 함께 옮김 |
+| `ReShade.ini`, `ReShadePreset.ini`, `ReShade.log`, `reshade-shaders` | ReShade 설정·셰이더. **포함** 설정일 때만 옮기며, 있는 것만 옮김 |
 | `ReShade.ini`의 `[ADDON] AddonPath`에 복사된 `wwmi_dx12.addon64` | `AddonPath`가 `Win64` 밖의 폴더로 지정된 경우 그 폴더의 addon64도 함께 백업하고, On 때 원래 위치로 복원 |
 
 게임 실행 파일(`Client-Win64-Shipping.exe` 등)과 그 밖의 게임 파일은 건드리지 않음.
 
-### ReShade 포함 여부
+### ReShade 설정·셰이더 포함 여부
 
-- **포함**(기본값): ReShade 세트도 함께 백업됨. DX11용 XXMI 런처가 자체 경로의 ReShade를 따로 주입하는 환경에서, `Win64`에 남은 `dxgi.dll`과 이중으로 로드되는 것을 피하고 싶을 때 사용.
-- **제외**: ReShade 세트는 `Win64`에 그대로 남음. DX11과 DX12가 같은 `dxgi.dll` 하나를 쓰는 환경에 적합.
+- `dxgi.dll`은 설정과 관계없이 항상 WWMI-DX12와 함께 백업됨. DX11용 XXMI 런처는 `dxgi.dll` 없이 자체 경로의 ReShade를 주입하기 때문에, `Win64`에 `dxgi.dll`이 남아 있으면 ReShade가 이중으로 로드될 수 있음.
+- **포함**(기본값): `ReShade.ini`, `ReShadePreset.ini`, `ReShade.log`, `reshade-shaders`도 함께 백업됨. `Win64`에는 ReShade 관련 파일이 남지 않음.
+- **제외**: 위 설정·셰이더 파일은 `Win64`에 그대로 남음. DX11 쪽 ReShade가 `Win64`의 `ReShade.ini`를 읽어서 쓰는 환경에 적합함.
 - 메뉴 `4`로 바꾸면 `wwmi_dx12_toggle.cfg`에 저장되어 유지됨.
 - **백업에 항목이 남아 있는 Off 상태에서는 바꿀 수 없음.** 먼저 `2`(On)로 복원한 뒤 바꿔야 함.
 
@@ -115,10 +117,10 @@ WWMI-DX12 가 설치된 명조 경로를 선택해 주세요.
 | --- | --- |
 | `wwmi_dx12_toggle.bat` | 실행용. PowerShell 스크립트를 호출하고 받은 인자를 그대로 전달 |
 | `wwmi_dx12_toggle.ps1` | 본체 |
-| `wwmi_dx12_toggle.cfg` | 명조 경로와 ReShade 포함 여부 저장. 실행 시 자동 생성되며 저장소에 포함하지 않음 |
+| `wwmi_dx12_toggle.cfg` | 명조 경로와 ReShade 설정·셰이더 포함 여부 저장. 실행 시 자동 생성되며 저장소에 포함하지 않음 |
 | `backup\` | 옮겨 둔 파일이 쌓이는 폴더. 실행 시 자동 생성되며 저장소에 포함하지 않음 |
 
-`cfg` 파일을 지우면 경로를 다시 묻고, ReShade 포함 여부는 기본값(포함)으로 돌아감.
+`cfg` 파일을 지우면 경로를 다시 묻고, ReShade 설정·셰이더 포함 여부는 기본값(포함)으로 돌아감.
 
 ## 사용 시 주의할 점
 
@@ -130,7 +132,7 @@ WWMI-DX12 가 설치된 명조 경로를 선택해 주세요.
 ## 면책 조항
 
 - 이 도구는 개인이 만든 비공식 도구이며, 쿠로게임즈(Kuro Games) 및 명조(Wuthering Waves), WWMI-DX12 제작자와 관련이 없음. 게임 이름과 상표는 각 소유자의 것임.
-- 명조 `Win64` 폴더 안의 WWMI-DX12 관련 파일(옵션에 따라 ReShade 파일 포함)을 백업 폴더로 이동하거나 되돌림. 게임 실행 파일과 그 밖의 게임 파일은 수정하지 않음.
+- 명조 `Win64` 폴더 안의 WWMI-DX12 관련 파일(옵션에 따라 ReShade 설정 파일 포함)을 백업 폴더로 이동하거나 되돌림. 게임 실행 파일과 그 밖의 게임 파일은 수정하지 않음.
 - 이 도구는 WWMI-DX12 및 ReShade 사용 자체의 안전성을 보장하지 않음. 해당 도구와 게임 약관·정책은 사용자가 직접 확인해야 함.
 - 이 도구의 사용으로 생기는 데이터 손실, 게임 문제, 계정 관련 불이익 등 어떠한 결과에 대해서도 작성자는 책임지지 않음. 사용에 따른 책임은 사용자에게 있음.
 

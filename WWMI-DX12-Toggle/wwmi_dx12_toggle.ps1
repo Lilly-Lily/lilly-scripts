@@ -1,5 +1,5 @@
 ﻿# WWMI-DX12 백업/복원 스크립트
-#   (인자 없음) : 상태를 보여주고 1/2/3/4 키로 선택 (3 = 명조 경로 변경, 4 = ReShade 포함 여부 전환)
+#   (인자 없음) : 상태를 보여주고 1/2/3/4 키로 선택 (3 = 명조 경로 변경, 4 = ReShade 설정·셰이더 포함 여부 전환)
 #   Off    : Win64 폴더의 WWMI-DX12 파일을 백업 폴더로 옮김 (삭제하지 않음)
 #   On     : 백업 폴더의 파일을 Win64 폴더로 되돌림
 #   Status : 현재 상태만 표시
@@ -11,17 +11,19 @@ param(
 )
 
 # ===== 설정 =====
-# 명조 경로와 ReShade 포함 여부는 wwmi_dx12_toggle.cfg 에 저장됩니다.
-# 처음 실행할 때 경로를 자동 탐색/입력받고, 메뉴의 [3] 경로 변경 / [4] ReShade 포함 전환으로 언제든 바꿀 수 있어요.
-# (cfg 파일을 지우면 경로를 다시 묻고 ReShade 포함 여부는 아래 기본값으로 돌아갑니다.)
+# 명조 경로와 ReShade 설정·셰이더 포함 여부는 wwmi_dx12_toggle.cfg 에 저장됩니다.
+# 처음 실행할 때 경로를 자동 탐색/입력받고, 메뉴의 [3] 경로 변경 / [4] ReShade 설정·셰이더 포함 전환으로 언제든 바꿀 수 있어요.
+# (cfg 파일을 지우면 경로를 다시 묻고 ReShade 설정·셰이더 포함 여부는 아래 기본값으로 돌아갑니다.)
 # 백업 저장소 (기본: 이 스크립트가 있는 폴더 아래 backup)
 $Backup = [IO.Path]::Combine($PSScriptRoot, "backup")
-# Win64의 ReShade(DX12용) 세트도 같이 옮길지 여부 (기본값 -- 메뉴 [4] 로 바꾸면 cfg 에 저장되어 그 값이 우선합니다)
-#   $true  : dxgi.dll, ReShade.ini, ReShadePreset.ini, ReShade.log, reshade-shaders 를 함께 옮김 (있는 것만)
-#            (DX11 런처가 자체 경로의 ReShade를 쓰는 경우 -- 이중 로드 방지)
-#   $false : ReShade 세트는 Win64에 그대로 둠
+# dxgi.dll 은 WWMI-DX12 가 ReShade 를 불러오는 데 쓰는 파일이라 항상 WWMI-DX12 와 함께 옮깁니다.
+#   (DX11 XXMI 런처는 dxgi.dll 없이 자체 경로의 ReShade 를 주입하므로, 남겨 두면 이중 로드될 수 있음)
+$AlwaysNames = @("dxgi.dll")
+# ReShade 설정·셰이더 파일도 같이 옮길지 여부 (기본값 -- 메뉴 [4] 로 바꾸면 cfg 에 저장되어 그 값이 우선합니다)
+#   $true  : ReShade.ini, ReShadePreset.ini, ReShade.log, reshade-shaders 를 함께 옮김 (있는 것만)
+#   $false : 이 파일들은 Win64에 그대로 둠 (DX11 쪽 ReShade 가 Win64의 ReShade.ini 를 읽는 경우 등)
 $IncludeReShadeDefault = $true
-$ReShadeNames = @("dxgi.dll", "ReShade.ini", "ReShadePreset.ini", "ReShade.log", "reshade-shaders")
+$ReShadeNames = @("ReShade.ini", "ReShadePreset.ini", "ReShade.log", "reshade-shaders")
 # ================
 
 $ErrorActionPreference = "Stop"
@@ -166,11 +168,11 @@ function Load-Cfg {
     return $r
 }
 
-# 백업 폴더에 WWMI-DX12 / ReShade 항목이 하나라도 있는지 (Off 상태 여부)
+# 백업 폴더에 WWMI-DX12 / dxgi.dll / ReShade 항목이 하나라도 있는지 (Off 상태 여부)
 function Test-BackupHasItems {
     if (-not [IO.Directory]::Exists($Backup)) { return $false }
     foreach ($e in (Get-ChildItem -LiteralPath $Backup -Force)) {
-        if ($e.Name -like "wwmi_dx12*" -or ($ReShadeNames -contains $e.Name)) { return $true }
+        if ($e.Name -like "wwmi_dx12*" -or ($AlwaysNames -contains $e.Name) -or ($ReShadeNames -contains $e.Name)) { return $true }
     }
     return $false
 }
@@ -181,6 +183,9 @@ function Get-TargetNames([string]$folder) {
     $names = @(Get-ChildItem -LiteralPath $folder -Force |
         Where-Object { $_.Name -like "wwmi_dx12*" } |
         ForEach-Object { $_.Name })
+    foreach ($a in $AlwaysNames) {
+        if ([IO.File]::Exists([IO.Path]::Combine($folder, $a))) { $names += $a }
+    }
     if ($IncludeReShade) {
         foreach ($r in $ReShadeNames) {
             $rp = [IO.Path]::Combine($folder, $r)
@@ -235,7 +240,7 @@ function Show-Status {
     Write-Host "  백업    : $Backup"
     $rs = "제외"
     if ($IncludeReShade) { $rs = "포함" }
-    Write-Host "  ReShade : $rs (메뉴 [4] 로 전환)"
+    Write-Host "  ReShade 설정·셰이더 : $rs (메뉴 [4] 로 전환)"
     Write-Host ""
     Write-Host "  Win64에 있는 항목 ($($inGame.Count))"
     foreach ($n in $inGame) { Write-Host "    $n" }
@@ -283,7 +288,7 @@ if ($Mode -eq "Menu") {
         Write-Host "  [3] 경로 : 명조 설치 경로 변경"
         $rsNow = "제외"; $rsNext = "포함"
         if ($IncludeReShade) { $rsNow = "포함"; $rsNext = "제외" }
-        Write-Host "  [4] ReShade : 현재 $rsNow -> $rsNext 로 전환"
+        Write-Host "  [4] ReShade 설정·셰이더 : 현재 $rsNow -> $rsNext 로 전환"
         Write-Host "  그 외 키 : 아무것도 하지 않고 닫기"
         $k = $null
         try { $k = [Console]::ReadKey($true).KeyChar } catch {}
@@ -313,7 +318,7 @@ if ($Mode -eq "Menu") {
                 Save-Cfg
                 $rs = "제외"
                 if ($IncludeReShade) { $rs = "포함" }
-                Write-Host "  ReShade 를 옮기는 대상에 $rs 하도록 바꿨어요." -ForegroundColor Green
+                Write-Host "  ReShade 설정·셰이더를 옮기는 대상에 $rs 하도록 바꿨어요." -ForegroundColor Green
             }
             Write-Host ""
             continue
