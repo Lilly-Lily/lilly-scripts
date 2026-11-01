@@ -7,6 +7,10 @@
 > [!WARNING]
 > 게임 폴더의 파일을 이동하는 도구임. 사용 전에 [면책 조항](#면책-조항)을 꼭 읽어볼 것.
 
+## 다운로드
+
+[Release 페이지](https://github.com/Lilly-Lily/lilly-scripts/releases/tag/WWMI-DX12-Toggle-v1.0)에서 `WWMI-DX12-Toggle.zip`을 받을 수 있음.
+
 ## 주요 기능
 
 - **Off**: `Win64`의 WWMI-DX12 파일을 백업 폴더로 이동
