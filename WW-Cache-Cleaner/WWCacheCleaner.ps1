@@ -333,8 +333,7 @@ function Invoke-Cleanup {
             Write-Log "[SKIP] $($cat.Short) 정리 꺼짐"
         }
     }
-
-    Write-Log '--- Steam 셰이더 캐시 ---'
+    # Steam 셰이더 캐시 전체도 추가 정리 항목에 포함
     if ($chkSteam.Checked) {
         $libs = @(Get-ListPaths $lvSteam)
         if ($libs.Count -eq 0) { Write-Log '[SKIP] 등록된 Steam 라이브러리 없음' }
