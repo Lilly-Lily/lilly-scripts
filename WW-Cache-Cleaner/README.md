@@ -68,7 +68,7 @@ Wuthering Waves Shader Cache Cleaner · v1.2
 | 구분 | 대상 폴더 | 범위 |
 | --- | --- | --- |
 | Windows | `%LOCALAPPDATA%\D3DSCache` (디스크 정리의 'DirectX 셰이더 캐시') | 전체 |
-| NVIDIA | `%LOCALAPPDATA%\NVIDIA\DXCache` / `LocalLow\NVIDIA\PerDriverVersion\DXCache` | 전체 |
+| NVIDIA | `%LOCALAPPDATA%\NVIDIA\DXCache` / `LocalLow\NVIDIA\PerDriverVersion\DXCache` / `LocalLow\NVIDIA\DXCache` | 전체. LocalLow 쪽은 환경에 따라 없을 수 있음 |
 | NVIDIA | `%ProgramData%\NVIDIA Corporation\NV_Cache` / `%LOCALAPPDATA%\NVIDIA Corporation\NV_Cache` | 맨 위 파일만. NGX 등 하위 폴더는 보존. 드라이버·환경에 따라 한쪽만 있거나 둘 다 없을 수 있음 |
 | AMD | `%LOCALAPPDATA%\AMD\` 아래 `DxCache`, `DxcCache` / `LocalLow\AMD\DxCache` | 전체 |
 | Intel | `%LOCALAPPDATA%\Intel\ShaderCache` / `LocalLow\Intel\ShaderCache` | 전체 |
