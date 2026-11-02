@@ -1,5 +1,5 @@
 ﻿# =====================================================
-#  명조 셰이더 캐시 정리 v1.1 (Wuthering Waves Shader Cache Cleaner)
+#  명조 셰이더 캐시 정리 v1.2 (Wuthering Waves Shader Cache Cleaner)
 #  - 명조 다중 클라이언트 PSO 캐시 + DirectX 셰이더 캐시(Windows/GPU 드라이버)
 #  - (선택) 추가 정리 항목: OpenGL / Vulkan / CUDA / Steam 셰이더 캐시
 #  - 설정은 같은 폴더의 settings.json 에 자동 저장
@@ -175,6 +175,7 @@ $ExtraCaches = [ordered]@{
             @{ Name = 'NVIDIA GLCache';          Path = "$env:LOCALAPPDATA\NVIDIA\GLCache" }
             @{ Name = 'NVIDIA LocalLow GLCache'; Path = "$LocalLow\NVIDIA\PerDriverVersion\GLCache" }
             @{ Name = 'AMD GLCache';             Path = "$env:LOCALAPPDATA\AMD\GLCache" }
+            @{ Name = 'AMD OglpCache';           Path = "$env:LOCALAPPDATA\AMD\OglpCache" }
         )
     }
     Vulkan = @{

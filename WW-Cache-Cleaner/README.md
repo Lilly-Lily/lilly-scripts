@@ -80,7 +80,7 @@ Wuthering Waves Shader Cache Cleaner · v1.2
 
 | 항목 | 대상 폴더 | 영향 |
 | --- | --- | --- |
-| OpenGL 셰이더 캐시 | `%LOCALAPPDATA%\NVIDIA\GLCache` / `LocalLow\NVIDIA\PerDriverVersion\GLCache` / `%LOCALAPPDATA%\AMD\GLCache` | OpenGL 게임·프로그램이 셰이더를 다시 만듦 |
+| OpenGL 셰이더 캐시 | `%LOCALAPPDATA%\NVIDIA\GLCache` / `LocalLow\NVIDIA\PerDriverVersion\GLCache` / `%LOCALAPPDATA%\AMD\GLCache` / `%LOCALAPPDATA%\AMD\OglpCache` | OpenGL 게임·프로그램이 셰이더를 다시 만듦 |
 | Vulkan 셰이더 캐시 | `%LOCALAPPDATA%\NVIDIA\VkCache` / `%LOCALAPPDATA%\AMD\VkCache` | Vulkan 게임이 셰이더를 다시 만듦 |
 | CUDA 캐시 | `%APPDATA%\NVIDIA\ComputeCache` | 영상 편집 등 GPU 가속 프로그램이 처음 한 번 다시 컴파일함 |
 | Steam 셰이더 캐시 전체 | 등록한 라이브러리마다 `steamapps\shadercache` | Steam이 게임 폴더 밖에 따로 관리하는 캐시. 모든 Steam 게임이 셰이더를 다시 만듦. Steam판 명조의 PSO(게임 폴더 안)와는 별개 |
