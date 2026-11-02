@@ -1,13 +1,15 @@
 ﻿# =====================================================
-#  명조 셰이더 캐시 정리 (WW Shader Cache Cleaner)
-#  - 명조 다중 클라이언트 PSO 캐시 + GPU 드라이버/DirectX 캐시 + (선택) Steam 셰이더 캐시
+#  명조 셰이더 캐시 정리 v1.1 (Wuthering Waves Shader Cache Cleaner)
+#  - 명조 다중 클라이언트 PSO 캐시 + DirectX 셰이더 캐시(Windows/GPU 드라이버)
+#  - (선택) 추가 정리 항목: OpenGL / Vulkan / CUDA / Steam 셰이더 캐시
 #  - 설정은 같은 폴더의 settings.json 에 자동 저장
 # =====================================================
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-$AppTitle = '명조 셰이더 캐시 정리'
+$AppTitle   = '명조 셰이더 캐시 정리'
+$AppVersion = '1.1'
 
 # ---------- 관리자 권한 확인 / 자동 상승 ----------
 $identity  = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -148,24 +150,47 @@ $LogFile      = Join-Path $ScriptDir 'ShaderCacheCleanup.log'
 $WWProcess    = 'Client-Win64-Shipping'
 
 $LocalLow = "$env:USERPROFILE\AppData\LocalLow"
+# 기본 정리 대상: 명조(DirectX)에 관련된 캐시
 $GpuCaches = @(
     @{ Name = 'Windows DirectX 셰이더 캐시'; Path = "$env:LOCALAPPDATA\D3DSCache" }
     @{ Name = 'NVIDIA DXCache';              Path = "$env:LOCALAPPDATA\NVIDIA\DXCache" }
-    @{ Name = 'NVIDIA GLCache';              Path = "$env:LOCALAPPDATA\NVIDIA\GLCache" }
-    @{ Name = 'NVIDIA VkCache';              Path = "$env:LOCALAPPDATA\NVIDIA\VkCache" }
-    @{ Name = 'NVIDIA ComputeCache';         Path = "$env:APPDATA\NVIDIA\ComputeCache" }
     # NV_Cache: 최상위 파일만 삭제, 하위 폴더(NGX 등)는 보존
     @{ Name = 'NVIDIA NV_Cache (시스템)';    Path = "$env:ProgramData\NVIDIA Corporation\NV_Cache"; FilesOnly = $true }
     @{ Name = 'NVIDIA LocalLow DXCache';     Path = "$LocalLow\NVIDIA\PerDriverVersion\DXCache" }
-    @{ Name = 'NVIDIA LocalLow GLCache';     Path = "$LocalLow\NVIDIA\PerDriverVersion\GLCache" }
     @{ Name = 'AMD DxCache';                 Path = "$env:LOCALAPPDATA\AMD\DxCache" }
     @{ Name = 'AMD DxcCache';                Path = "$env:LOCALAPPDATA\AMD\DxcCache" }
-    @{ Name = 'AMD GLCache';                 Path = "$env:LOCALAPPDATA\AMD\GLCache" }
-    @{ Name = 'AMD VkCache';                 Path = "$env:LOCALAPPDATA\AMD\VkCache" }
     @{ Name = 'AMD LocalLow DxCache';        Path = "$LocalLow\AMD\DxCache" }
     @{ Name = 'Intel ShaderCache';           Path = "$env:LOCALAPPDATA\Intel\ShaderCache" }
     @{ Name = 'Intel LocalLow ShaderCache';  Path = "$LocalLow\Intel\ShaderCache" }
 )
+
+# 추가 정리 항목 (선택, 기본값 꺼짐) - 명조와는 무관한 캐시
+$ExtraCaches = [ordered]@{
+    OpenGL = @{
+        Short = 'OpenGL 캐시'
+        Label = 'OpenGL 셰이더 캐시  (NVIDIA·AMD GLCache)'
+        Items = @(
+            @{ Name = 'NVIDIA GLCache';          Path = "$env:LOCALAPPDATA\NVIDIA\GLCache" }
+            @{ Name = 'NVIDIA LocalLow GLCache'; Path = "$LocalLow\NVIDIA\PerDriverVersion\GLCache" }
+            @{ Name = 'AMD GLCache';             Path = "$env:LOCALAPPDATA\AMD\GLCache" }
+        )
+    }
+    Vulkan = @{
+        Short = 'Vulkan 캐시'
+        Label = 'Vulkan 셰이더 캐시  (NVIDIA·AMD VkCache)'
+        Items = @(
+            @{ Name = 'NVIDIA VkCache'; Path = "$env:LOCALAPPDATA\NVIDIA\VkCache" }
+            @{ Name = 'AMD VkCache';    Path = "$env:LOCALAPPDATA\AMD\VkCache" }
+        )
+    }
+    CUDA = @{
+        Short = 'CUDA 캐시'
+        Label = 'CUDA 캐시  (NVIDIA ComputeCache · 게임과 무관, GPU 가속 프로그램이 다시 컴파일함)'
+        Items = @(
+            @{ Name = 'NVIDIA ComputeCache'; Path = "$env:APPDATA\NVIDIA\ComputeCache" }
+        )
+    }
+}
 
 $ColorOk  = [System.Drawing.Color]::FromArgb(0, 135, 60)
 $ColorBad = [System.Drawing.Color]::FromArgb(200, 40, 40)
@@ -177,6 +202,7 @@ function Get-DefaultSettings {
         WWPaths        = @('C:\Program Files\Wuthering Waves')
         CleanSteam     = $false
         SteamLibraries = @('C:\Program Files (x86)\Steam')
+        Extras         = @{ OpenGL = $false; Vulkan = $false; CUDA = $false }
     }
 }
 
@@ -188,6 +214,11 @@ function Read-Settings {
             if ($null -ne $j.WWPaths)        { $d.WWPaths        = @($j.WWPaths | Where-Object { $_ }) }
             if ($null -ne $j.CleanSteam)     { $d.CleanSteam     = [bool]$j.CleanSteam }
             if ($null -ne $j.SteamLibraries) { $d.SteamLibraries = @($j.SteamLibraries | Where-Object { $_ }) }
+            if ($null -ne $j.Extras) {
+                foreach ($k in @($d.Extras.Keys)) {
+                    if ($null -ne $j.Extras.$k) { $d.Extras[$k] = [bool]$j.Extras.$k }
+                }
+            }
         } catch { }
     }
     return $d
@@ -202,6 +233,11 @@ function Save-Settings {
         WWPaths        = @(Get-ListPaths $lvWW)
         CleanSteam     = [bool]$chkSteam.Checked
         SteamLibraries = @(Get-ListPaths $lvSteam)
+        Extras         = [ordered]@{
+            OpenGL = [bool]$ExtraChecks['OpenGL'].Checked
+            Vulkan = [bool]$ExtraChecks['Vulkan'].Checked
+            CUDA   = [bool]$ExtraChecks['CUDA'].Checked
+        }
     }
     try { $obj | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $SettingsFile -Encoding UTF8 } catch { }
 }
@@ -279,14 +315,24 @@ function Invoke-Cleanup {
     $txtLog.Clear()
     $header = @(
         '==========================================',
-        '셰이더 캐시 정리 로그',
+        "셰이더 캐시 정리 로그 (v$AppVersion)",
         (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),
         '=========================================='
     )
     try { Set-Content -LiteralPath $LogFile -Value $header -Encoding UTF8 } catch { }
 
-    Write-Log '--- GPU 드라이버 / DirectX 캐시 ---'
+    Write-Log '--- DirectX 셰이더 캐시 (Windows / GPU 드라이버) ---'
     foreach ($c in $GpuCaches) { Clear-CacheDir $c.Path $c.Name ([bool]$c.FilesOnly) }
+
+    Write-Log '--- 추가 정리 항목 ---'
+    foreach ($k in $ExtraCaches.Keys) {
+        $cat = $ExtraCaches[$k]
+        if ($ExtraChecks[$k].Checked) {
+            foreach ($c in $cat.Items) { Clear-CacheDir $c.Path $c.Name }
+        } else {
+            Write-Log "[SKIP] $($cat.Short) 정리 꺼짐"
+        }
+    }
 
     Write-Log '--- Steam 셰이더 캐시 ---'
     if ($chkSteam.Checked) {
@@ -434,21 +480,22 @@ function New-ListGroup([string]$title, $topControl, $listView, [object[]]$button
 
 # ---------- 폼 구성 ----------
 $form = New-Object System.Windows.Forms.Form
-$form.Text = $AppTitle
+$form.Text = "$AppTitle v$AppVersion"
 $form.Font = New-Object System.Drawing.Font('Malgun Gothic', 9)
 $form.AutoScaleMode = 'None'
 $form.StartPosition = 'CenterScreen'
-$form.ClientSize  = New-Object System.Drawing.Size((S 720), (S 720))
-$form.MinimumSize = New-Object System.Drawing.Size((S 600), (S 620))
+$form.ClientSize  = New-Object System.Drawing.Size((S 720), (S 850))
+$form.MinimumSize = New-Object System.Drawing.Size((S 600), (S 760))
 $form.Padding = New-Object System.Windows.Forms.Padding((S 10))
 
 $root = New-Object System.Windows.Forms.TableLayoutPanel
 $root.Dock = 'Fill'
 $root.ColumnCount = 1
-$root.RowCount = 4
+$root.RowCount = 5
 [void]$root.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, (S 190))))
-[void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, (S 175))))
+[void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, (S 185))))
+[void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, (S 165))))
 [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
 [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 $form.Controls.Add($root)
@@ -467,18 +514,58 @@ $btnWWDel  = New-Button '삭제'
 $grpWW = New-ListGroup '명조 클라이언트 경로' $lblWW $lvWW @($btnWWAdd, $btnWWEdit, $btnWWDel)
 $root.Controls.Add($grpWW, 0, 0)
 
+# 추가 정리 항목 그룹 (체크리스트)
+function New-ExtraCheck([string]$text) {
+    $c = New-Object System.Windows.Forms.CheckBox
+    $c.Text = $text
+    $c.AutoSize = $true
+    $c.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, (S 4))
+    return $c
+}
+
+$grpExtra = New-Object System.Windows.Forms.GroupBox
+$grpExtra.Text = '추가 정리 항목 (선택)'
+$grpExtra.Dock = 'Fill'
+$grpExtra.Padding = New-Object System.Windows.Forms.Padding((S 8))
+
+$flowExtra = New-Object System.Windows.Forms.FlowLayoutPanel
+$flowExtra.FlowDirection = 'TopDown'
+$flowExtra.WrapContents = $false
+$flowExtra.Dock = 'Fill'
+$flowExtra.AutoScroll = $true
+
+$lblExtra = New-Object System.Windows.Forms.Label
+$lblExtra.Text = '명조에는 필요 없는 항목(명조 PSO는 위에서 정리). 다른 게임이나 프로그램의 캐시까지 비우고 싶을 때 선택.'
+$lblExtra.AutoSize = $true
+$lblExtra.ForeColor = $ColorDim
+$lblExtra.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, (S 6))
+$flowExtra.Controls.Add($lblExtra)
+
+$ExtraChecks = @{}
+foreach ($k in $ExtraCaches.Keys) {
+    $c = New-ExtraCheck $ExtraCaches[$k].Label
+    $ExtraChecks[$k] = $c
+    $flowExtra.Controls.Add($c)
+}
+$chkSteam = New-ExtraCheck 'Steam 셰이더 캐시 전체  (Steam이 따로 관리하는 모든 게임의 캐시 · 명조 PSO와는 별개)'
+$flowExtra.Controls.Add($chkSteam)
+
+$grpExtra.Controls.Add($flowExtra)
+$root.Controls.Add($grpExtra, 0, 1)
+
 # Steam 그룹
-$chkSteam = New-Object System.Windows.Forms.CheckBox
-$chkSteam.Text = 'Steam 셰이더 캐시도 정리  (모든 Steam 게임이 셰이더를 다시 컴파일합니다)'
-$chkSteam.AutoSize = $true
-$chkSteam.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, (S 6))
+$lblSteam = New-Object System.Windows.Forms.Label
+$lblSteam.Text = '위에서 Steam 셰이더 캐시를 선택하면 아래 라이브러리의 shadercache를 정리함.'
+$lblSteam.AutoSize = $true
+$lblSteam.ForeColor = $ColorDim
+$lblSteam.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, (S 6))
 
 $lvSteam = New-PathList
 $btnSteamAdd  = New-Button '추가'
 $btnSteamDel  = New-Button '삭제'
 $btnSteamAuto = New-Button '자동 감지'
-$grpSteam = New-ListGroup 'Steam 라이브러리' $chkSteam $lvSteam @($btnSteamAdd, $btnSteamDel, $btnSteamAuto)
-$root.Controls.Add($grpSteam, 0, 1)
+$grpSteam = New-ListGroup 'Steam 라이브러리' $lblSteam $lvSteam @($btnSteamAdd, $btnSteamDel, $btnSteamAuto)
+$root.Controls.Add($grpSteam, 0, 2)
 
 # 실행 줄
 $runRow = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -505,7 +592,7 @@ $lblHint.Margin = New-Object System.Windows.Forms.Padding((S 12), (S 12), 0, 0)
 $runRow.Controls.Add($btnRun)
 $runRow.Controls.Add($btnOpenLog)
 $runRow.Controls.Add($lblHint)
-$root.Controls.Add($runRow, 0, 2)
+$root.Controls.Add($runRow, 0, 3)
 
 # 로그 그룹
 $grpLog = New-Object System.Windows.Forms.GroupBox
@@ -520,7 +607,7 @@ $txtLog.WordWrap = $false
 $txtLog.Dock = 'Fill'
 $txtLog.BackColor = [System.Drawing.SystemColors]::Window
 $grpLog.Controls.Add($txtLog)
-$root.Controls.Add($grpLog, 0, 3)
+$root.Controls.Add($grpLog, 0, 4)
 
 # ---------- 동작 ----------
 function Update-SteamEnabled {
@@ -529,7 +616,7 @@ function Update-SteamEnabled {
 }
 
 function Set-UiBusy([bool]$busy) {
-    foreach ($c in @($grpWW, $grpSteam, $btnRun, $btnOpenLog)) { $c.Enabled = -not $busy }
+    foreach ($c in @($grpWW, $grpExtra, $grpSteam, $btnRun, $btnOpenLog)) { $c.Enabled = -not $busy }
     $form.UseWaitCursor = $busy
     [System.Windows.Forms.Application]::DoEvents()
 }
@@ -597,6 +684,10 @@ $chkSteam.Add_CheckedChanged({
     Save-Settings
 })
 
+foreach ($c in $ExtraChecks.Values) {
+    $c.Add_CheckedChanged({ Save-Settings })
+}
+
 $btnOpenLog.Add_Click({
     if (Test-Path -LiteralPath $LogFile) { Start-Process -FilePath 'notepad.exe' -ArgumentList "`"$LogFile`"" }
     else { Show-Info '아직 로그 파일이 없습니다.' }
@@ -628,6 +719,7 @@ $settings = Read-Settings
 foreach ($p in $settings.WWPaths)        { Add-PathItem $lvWW $p }
 foreach ($p in $settings.SteamLibraries) { Add-PathItem $lvSteam $p }
 $chkSteam.Checked = $settings.CleanSteam
+foreach ($k in $ExtraCaches.Keys) { $ExtraChecks[$k].Checked = [bool]$settings.Extras[$k] }
 Update-SteamEnabled
 Update-Status
 if (-not (Test-Path -LiteralPath $SettingsFile)) { Save-Settings }
