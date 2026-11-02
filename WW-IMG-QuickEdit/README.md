@@ -9,6 +9,10 @@ Wuthering Waves Image Quick Edit
 > [!WARNING]
 > 개인이 만든 비공식 도구임. 사용 전에 [면책 조항](#면책-조항)을 확인할 것.
 
+## 다운로드
+
+[Release 페이지](https://github.com/Lilly-Lily/lilly-scripts/releases?q=WW-IMG-QuickEdit)에서 가장 최신 버전의 `WW-IMG-QuickEdit-v버전.zip`(예: `WW-IMG-QuickEdit-v1.0.zip`) 파일을 받을 수 있음. `Source code`는 저장소 전체 사본이므로 받지 말 것.
+
 ## 주요 기능
 
 - 드롭 창에 이미지 여러 장 또는 폴더를 던지면 일괄 처리
@@ -28,7 +32,7 @@ Wuthering Waves Image Quick Edit
 
 ## 사용법
 
-1. 이 폴더를 통째로 내려받아 원하는 위치에 둠. `WWImageQuickEdit.bat`과 `WWImageQuickEdit.ps1`은 반드시 같은 폴더에 있어야 함.
+1. [다운로드](#다운로드)한 zip의 압축을 풀어 원하는 위치에 둠. `WWImageQuickEdit.bat`과 `WWImageQuickEdit.ps1`은 반드시 같은 폴더에 있어야 함.
 2. 인터넷에서 받은 경우 두 파일 각각 **오른쪽 클릭 → 속성 → 하단 '차단 해제' 체크 → 확인**.
 3. `WWImageQuickEdit.bat`을 더블클릭하면 드롭 창이 뜸.
 4. 이미지 여러 장이나 폴더를 드롭 영역에 끌어다 놓음.

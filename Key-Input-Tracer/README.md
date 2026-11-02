@@ -7,6 +7,10 @@
 > [!WARNING]
 > 모든 키 입력을 기록하는 도구이므로 추적 중에 입력한 비밀번호도 로그에 남음. 사용 전에 [면책 조항](#면책-조항)을 확인할 것.
 
+## 다운로드
+
+[Release 페이지](https://github.com/Lilly-Lily/lilly-scripts/releases?q=Key-Input-Tracer)에서 가장 최신 버전의 `Key-Input-Tracer-v버전.zip`(예: `Key-Input-Tracer-v1.0.zip`) 파일을 받을 수 있음. `Source code`는 저장소 전체 사본이므로 받지 말 것.
+
 ## 주요 기능
 
 - 실제 키 / 주입된 키 구분 표시 (주입된 키는 빨간 줄)
@@ -24,7 +28,7 @@
 
 ## 사용법
 
-1. `key-input-tracer.bat`과 `key-input-tracer.ps1`을 같은 폴더에 둠.
+1. [다운로드](#다운로드)한 zip의 압축을 풀어 `key-input-tracer.bat`과 `key-input-tracer.ps1`을 같은 폴더에 둠.
 2. 인터넷에서 받은 파일이라 실행이 막히면 `key-input-tracer.ps1` 우클릭 → 속성 → **차단 해제** 체크 → 확인.
 3. `key-input-tracer.bat`을 더블클릭함. 창이 뜨면 바로 추적이 시작됨.
 4. 오래 지켜볼 때는 [자동 저장]을 켜고 창을 최소화한 채 평소처럼 사용함.

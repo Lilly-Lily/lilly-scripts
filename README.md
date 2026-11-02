@@ -13,16 +13,16 @@
 | 도구 | 설명 | 관리자 권한 |
 | --- | --- | --- |
 | [WW-Cache-Cleaner](WW-Cache-Cleaner/) | 다중 클라이언트용 셰이더 캐시 정리 (게임·그래픽 드라이버·DirectX·Steam) ([Release](https://github.com/Lilly-Lily/lilly-scripts/releases/tag/WW-Cache-Cleaner-v1.0)) | 필요 |
-| [WW-IMG-QuickEdit](WW-IMG-QuickEdit/) | 스크린샷 UID 자동 가리기, 크롭·리사이즈·포맷 변환 | 필요 없음 |
-| [WW-INI-Manager](WW-INI-Manager/) | 클라이언트별 `Engine.ini` 백업·삭제·이식·복원 | 필요 없음 (설치 위치에 따라 필요) |
+| [WW-IMG-QuickEdit](WW-IMG-QuickEdit/) | 스크린샷 UID 자동 가리기, 크롭·리사이즈·포맷 변환 ([Release](https://github.com/Lilly-Lily/lilly-scripts/releases/tag/WW-IMG-QuickEdit-v1.0)) | 필요 없음 |
+| [WW-INI-Manager](WW-INI-Manager/) | 클라이언트별 `Engine.ini` 백업·삭제·이식·복원 ([Release](https://github.com/Lilly-Lily/lilly-scripts/releases/tag/WW-INI-Manager-v1.0)) | 필요 없음 (설치 위치에 따라 필요) |
 | [WWMI-DX12-Toggle](WWMI-DX12-Toggle/) | WWMI-DX12 파일을 백업 폴더로 이동하거나 복원하여 작동을 끄고 켜기 ([Release](https://github.com/Lilly-Lily/lilly-scripts/releases/tag/WWMI-DX12-Toggle-v1.0)) | 필요 없음 (설치 위치에 따라 필요) |
 
 ## 일반 도구
 
 | 도구 | 설명 | 관리자 권한 |
 | --- | --- | --- |
-| [HashTool](HashTool/) | 파일·폴더 해시 조회·저장·비교·검증 | 필요 없음 |
-| [Key-Input-Tracer](Key-Input-Tracer/) | 키 입력이 실제 키보드인지 다른 프로그램이 주입한 것인지 구분해 기록 | 필요 없음 |
+| [HashTool](HashTool/) | 파일·폴더 해시 조회·저장·비교·검증 ([Release](https://github.com/Lilly-Lily/lilly-scripts/releases/tag/HashTool-v1.0)) | 필요 없음 |
+| [Key-Input-Tracer](Key-Input-Tracer/) | 키 입력이 실제 키보드인지 다른 프로그램이 주입한 것인지 구분해 기록 ([Release](https://github.com/Lilly-Lily/lilly-scripts/releases/tag/Key-Input-Tracer-v1.0)) | 필요 없음 |
 
 ## 공통 요구 사항
 

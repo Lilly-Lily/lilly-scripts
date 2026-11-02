@@ -9,6 +9,10 @@ Kuro, Google, Steam, Epic 클라이언트를 최대 4개까지 등록함. 작업
 > [!WARNING]
 > 게임 설정 파일을 덮어쓰거나 삭제하는 도구임. 사용 전에 [면책 조항](#면책-조항)을 확인할 것.
 
+## 다운로드
+
+[Release 페이지](https://github.com/Lilly-Lily/lilly-scripts/releases?q=WW-INI-Manager)에서 가장 최신 버전의 `WW-INI-Manager-v버전.zip`(예: `WW-INI-Manager-v1.0.zip`) 파일을 받을 수 있음. `Source code`는 저장소 전체 사본이므로 받지 말 것.
+
 ## 주요 기능
 
 - 클라이언트별 경로 지정. 경로 상태(●) 표시와 `Engine.ini` 폴더 바로 열기를 지원함.
@@ -31,7 +35,7 @@ Kuro, Google, Steam, Epic 클라이언트를 최대 4개까지 등록함. 작업
 
 ## 사용법
 
-1. `WuWaIniManager.bat`과 `WuWaIniManager.ps1`을 같은 폴더에 둠.
+1. [다운로드](#다운로드)한 zip의 압축을 풀어 `WuWaIniManager.bat`과 `WuWaIniManager.ps1`을 같은 폴더에 둠.
 2. 인터넷에서 받은 경우 `.ps1` 파일 우클릭 → **속성** → **차단 해제**를 체크하고 확인을 누름.
 3. `WuWaIniManager.bat`을 더블클릭해서 실행함.
 4. 각 클라이언트의 [찾기]로 `Wuthering Waves.exe`가 있는 폴더를 지정함.
