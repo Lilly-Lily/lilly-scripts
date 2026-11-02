@@ -9,6 +9,10 @@ GPU 드라이버·DirectX 셰이더 캐시와 명조 클라이언트별 PSO 캐�
 > [!WARNING]
 > 비공식 도구임. 관리자 권한으로 캐시 폴더의 파일을 삭제하므로, 아래 [면책 조항](#면책-조항)을 먼저 읽을 것.
 
+## 다운로드
+
+[Release 페이지](https://github.com/Lilly-Lily/lilly-scripts/releases?q=WW-Cache-Cleaner)에서 가장 최신 버전의 `WW-Cache-Cleaner-v버전.zip`(예: `WW-Cache-Cleaner-v1.0.zip`) 파일을 받을 수 있음. `Source code`는 저장소 전체 사본이므로 받지 말 것.
+
 ## 주요 기능
 
 - 명조 클라이언트 여러 개(런처판·Steam판 혼용 가능)의 `PSO`, `PSOReport` 캐시 일괄 정리
@@ -25,7 +29,7 @@ GPU 드라이버·DirectX 셰이더 캐시와 명조 클라이언트별 PSO 캐�
 
 ## 사용법
 
-1. 저장소를 내려받아 `WWCacheCleaner.bat`과 `WWCacheCleaner.ps1`을 같은 폴더에 둠.
+1. [다운로드](#다운로드)한 zip의 압축을 풀어 `WWCacheCleaner.bat`과 `WWCacheCleaner.ps1`을 같은 폴더에 둠.
 2. 인터넷에서 받은 파일이라 실행이 막히면, `.ps1` 파일 속성에서 **차단 해제**를 체크함.
 3. 명조와 런처를 모두 종료함.
 4. `WWCacheCleaner.bat`을 더블클릭하고 UAC 창에서 [예]를 누름.
