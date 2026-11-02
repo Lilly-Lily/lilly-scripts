@@ -157,8 +157,8 @@ $GpuCaches = @(
     # NV_Cache: 최상위 파일만 삭제, 하위 폴더(NGX 등)는 보존
     @{ Name = 'NVIDIA NV_Cache (시스템)';    Path = "$env:ProgramData\NVIDIA Corporation\NV_Cache"; FilesOnly = $true }
     @{ Name = 'NVIDIA NV_Cache (사용자)';    Path = "$env:LOCALAPPDATA\NVIDIA Corporation\NV_Cache"; FilesOnly = $true }
-    @{ Name = 'NVIDIA LocalLow DXCache';     Path = "$LocalLow\NVIDIA\PerDriverVersion\DXCache" }
-    @{ Name = 'NVIDIA LocalLow DXCache (PerDriverVersion 없음)'; Path = "$LocalLow\NVIDIA\DXCache" }
+    @{ Name = 'NVIDIA LocalLow PerDriverVersion\DXCache'; Path = "$LocalLow\NVIDIA\PerDriverVersion\DXCache" }
+    @{ Name = 'NVIDIA LocalLow\DXCache'; Path = "$LocalLow\NVIDIA\DXCache" }
     @{ Name = 'AMD DxCache';                 Path = "$env:LOCALAPPDATA\AMD\DxCache" }
     @{ Name = 'AMD DxcCache';                Path = "$env:LOCALAPPDATA\AMD\DxcCache" }
     @{ Name = 'AMD LocalLow DxCache';        Path = "$LocalLow\AMD\DxCache" }
