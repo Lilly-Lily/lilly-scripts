@@ -9,7 +9,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 $AppTitle   = '명조 셰이더 캐시 정리'
-$AppVersion = '1.1'
+$AppVersion = '1.2'
 
 # ---------- 관리자 권한 확인 / 자동 상승 ----------
 $identity  = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -156,6 +156,7 @@ $GpuCaches = @(
     @{ Name = 'NVIDIA DXCache';              Path = "$env:LOCALAPPDATA\NVIDIA\DXCache" }
     # NV_Cache: 최상위 파일만 삭제, 하위 폴더(NGX 등)는 보존
     @{ Name = 'NVIDIA NV_Cache (시스템)';    Path = "$env:ProgramData\NVIDIA Corporation\NV_Cache"; FilesOnly = $true }
+    @{ Name = 'NVIDIA NV_Cache (사용자)';    Path = "$env:LOCALAPPDATA\NVIDIA Corporation\NV_Cache"; FilesOnly = $true }
     @{ Name = 'NVIDIA LocalLow DXCache';     Path = "$LocalLow\NVIDIA\PerDriverVersion\DXCache" }
     @{ Name = 'AMD DxCache';                 Path = "$env:LOCALAPPDATA\AMD\DxCache" }
     @{ Name = 'AMD DxcCache';                Path = "$env:LOCALAPPDATA\AMD\DxcCache" }
@@ -199,7 +200,7 @@ $ColorDim = [System.Drawing.Color]::Gray
 # ---------- 설정 ----------
 function Get-DefaultSettings {
     [pscustomobject]@{
-        WWPaths        = @('C:\Program Files\Wuthering Waves')
+        WWPaths        = @('C:\Wuthering Waves')
         CleanSteam     = $false
         SteamLibraries = @('C:\Program Files (x86)\Steam')
         Extras         = @{ OpenGL = $false; Vulkan = $false; CUDA = $false }
@@ -278,7 +279,38 @@ function Find-SteamLibraries {
         }
         if ($found.Count -eq 0) { $found.Add($steam) }
     }
-    return ,$found.ToArray()
+    return $found.ToArray()
+}
+
+# 명조 설치 루트 자동 탐색 (얕은 탐색: Steam 라이브러리 + 각 드라이브의 흔한 위치만 확인)
+function Find-WWInstalls([string[]]$extraSteamLibs = @()) {
+    $found = New-Object System.Collections.Generic.List[string]
+    $add = {
+        param($root)
+        if ((Resolve-WWSaved $root) -and -not ($found | Where-Object { $_ -ieq $root })) { $found.Add($root) }
+    }
+
+    # 1) Steam판: 모든 라이브러리의 steamapps\common\Wuthering Waves
+    $libs = New-Object System.Collections.Generic.List[string]
+    foreach ($l in @(Find-SteamLibraries) + $extraSteamLibs) {
+        if ($l -and -not ($libs | Where-Object { $_ -ieq $l })) { $libs.Add($l) }
+    }
+    foreach ($l in $libs) {
+        $apps = Get-SteamAppsDir $l
+        & $add ([IO.Path]::Combine($apps, 'common\Wuthering Waves'))
+    }
+
+    # 2) 런처판·Epic판: 고정 드라이브마다 흔한 위치 확인
+    $drives = @([IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady })
+    foreach ($d in $drives) {
+        $r = $d.RootDirectory.FullName
+        foreach ($sub in @('Wuthering Waves', 'Wuthering Waves Game', 'Program Files\Wuthering Waves', 'Program Files (x86)\Wuthering Waves',
+                           'Games\Wuthering Waves', 'Game\Wuthering Waves', 'Games\Kuro Games\Wuthering Waves',
+                           'Program Files\Epic Games\WutheringWavesj3oFh', 'Epic Games\WutheringWavesj3oFh', 'WutheringWavesj3oFh')) {
+            & $add ([IO.Path]::Combine($r, $sub))
+        }
+    }
+    return $found.ToArray()
 }
 
 # ---------- 로그 / 정리 ----------
@@ -483,8 +515,8 @@ $form.Text = "$AppTitle v$AppVersion"
 $form.Font = New-Object System.Drawing.Font('Malgun Gothic', 9)
 $form.AutoScaleMode = 'None'
 $form.StartPosition = 'CenterScreen'
-$form.ClientSize  = New-Object System.Drawing.Size((S 720), (S 850))
-$form.MinimumSize = New-Object System.Drawing.Size((S 600), (S 760))
+$form.ClientSize  = New-Object System.Drawing.Size((S 720), (S 857))
+$form.MinimumSize = New-Object System.Drawing.Size((S 600), (S 767))
 $form.Padding = New-Object System.Windows.Forms.Padding((S 10))
 
 $root = New-Object System.Windows.Forms.TableLayoutPanel
@@ -492,8 +524,8 @@ $root.Dock = 'Fill'
 $root.ColumnCount = 1
 $root.RowCount = 5
 [void]$root.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
-[void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, (S 190))))
-[void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, (S 185))))
+[void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, (S 215))))
+[void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, (S 167))))
 [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, (S 165))))
 [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
 [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
@@ -510,7 +542,8 @@ $lvWW = New-PathList
 $btnWWAdd  = New-Button '추가'
 $btnWWEdit = New-Button '변경'
 $btnWWDel  = New-Button '삭제'
-$grpWW = New-ListGroup '명조 클라이언트 경로' $lblWW $lvWW @($btnWWAdd, $btnWWEdit, $btnWWDel)
+$btnWWAuto = New-Button '자동 감지'
+$grpWW = New-ListGroup '명조 클라이언트 경로' $lblWW $lvWW @($btnWWAdd, $btnWWEdit, $btnWWDel, $btnWWAuto)
 $root.Controls.Add($grpWW, 0, 0)
 
 # 추가 정리 항목 그룹 (체크리스트)
@@ -648,6 +681,27 @@ $btnWWDel.Add_Click({
     if ($lvWW.SelectedItems.Count -eq 0) { return }
     $lvWW.Items.Remove($lvWW.SelectedItems[0])
     Save-Settings
+})
+
+$btnWWAuto.Add_Click({
+    Set-UiBusy $true
+    try {
+        $hits = @(Find-WWInstalls @(Get-ListPaths $lvSteam))
+    } finally {
+        Set-UiBusy $false
+    }
+    if ($hits.Count -eq 0) {
+        Show-Info "명조 설치를 찾지 못했습니다.`n흔한 위치(드라이브 최상위, Program Files, Games, Steam 라이브러리)만 확인합니다.`n그 밖의 위치는 [추가]로 직접 등록해 주세요." 'Warning'
+        return
+    }
+    $existing = @(Get-ListPaths $lvWW)
+    $added = 0
+    foreach ($h in $hits) {
+        if (-not ($existing | Where-Object { $_ -ieq $h })) { Add-PathItem $lvWW $h; $added++ }
+    }
+    Update-Status
+    Save-Settings
+    Show-Info "명조 설치 $($hits.Count)개를 감지했고, 새로 $($added)개를 추가했습니다."
 })
 
 $btnSteamAdd.Add_Click({

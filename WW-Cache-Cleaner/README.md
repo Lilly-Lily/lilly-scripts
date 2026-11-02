@@ -1,23 +1,24 @@
 # 명조 셰이더 캐시 정리 도구
 
-Wuthering Waves Shader Cache Cleaner · v1.1
+Wuthering Waves Shader Cache Cleaner · v1.2
 
 명조(Wuthering Waves) 다중 클라이언트용 셰이더 캐시 정리 도구.
 
-명조 클라이언트별 PSO 캐시와 DirectX 셰이더 캐시(Windows·GPU 드라이버)를 비워서, 게임이 현재 드라이버 환경에 맞게 셰이더를 새로 만들도록 함. 드라이버 업데이트나 게임 패치 뒤 생기는 스터터링을 정리하는 용도. 필요하면 OpenGL·Vulkan·CUDA·Steam 셰이더 캐시도 골라서 함께 정리할 수 있음.
+명조 클라이언트별 PSO 캐시와 DirectX 셰이더 캐시(Windows·GPU 드라이버)를 비워서, 게임이 현재 드라이버 환경에 맞게 셰이더를 새로 만들도록 함. 드라이버나 게임 업데이트 뒤 생기는 스터터링을 정리하는 용도. 필요하면 OpenGL·Vulkan·CUDA·Steam 셰이더 캐시도 골라서 함께 정리할 수 있음.
 
 > [!WARNING]
 > 비공식 도구임. 관리자 권한으로 캐시 폴더의 파일을 삭제하므로, 아래 [면책 조항](#면책-조항)을 먼저 읽을 것.
 
 ## 다운로드
 
-[Release 페이지](https://github.com/Lilly-Lily/lilly-scripts/releases?q=WW-Cache-Cleaner)에서 가장 최신 버전의 `WW-Cache-Cleaner-v버전.zip`(예: `WW-Cache-Cleaner-v1.1.zip`) 파일을 받을 수 있음. `Source code`는 저장소 전체 사본이므로 받지 말 것.
+[Release 페이지](https://github.com/Lilly-Lily/lilly-scripts/releases?q=WW-Cache-Cleaner)에서 가장 최신 버전의 `WW-Cache-Cleaner-v버전.zip`(예: `WW-Cache-Cleaner-v1.2.zip`) 파일을 받을 수 있음. `Source code`는 저장소 전체 사본이므로 받지 말 것.
 
 ## 주요 기능
 
-- 명조 클라이언트 여러 개(런처판·Steam판 혼용 가능)의 `PSO`, `PSOReport` 캐시 일괄 정리
+- 명조 클라이언트 여러 개(런처판·Steam판·Epic판 혼용 가능)의 `PSO`, `PSOReport` 캐시 일괄 정리
 - Windows와 NVIDIA·AMD·Intel 드라이버의 DirectX 셰이더 캐시 정리
 - **추가 정리 항목**(선택, 기본값 꺼짐): OpenGL·Vulkan·CUDA·Steam 셰이더 캐시를 체크해서 함께 정리
+- 명조 설치 경로 자동 감지(Steam 라이브러리, 드라이브별 흔한 설치 위치, Epic판)
 - Steam 라이브러리 자동 감지
 - 창(UI)에서 경로를 추가·변경·삭제하고 설정을 자동 저장
 - 진행 상황을 창과 로그 파일에 기록
@@ -34,7 +35,7 @@ Wuthering Waves Shader Cache Cleaner · v1.1
 2. 인터넷에서 받은 파일이라 실행이 막히면, `.ps1` 파일 속성에서 **차단 해제**를 체크함.
 3. 명조와 런처를 모두 종료함.
 4. `WWCacheCleaner.bat`을 더블클릭하고 UAC 창에서 [예]를 누름.
-5. 명조 설치 루트 폴더를 등록하고(예: `D:\Wuthering Waves`), 필요하면 추가 정리 항목을 체크한 뒤 [캐시 정리 실행]을 누름.
+5. [자동 감지]로 명조 설치 폴더를 찾거나 직접 등록하고(예: `D:\Wuthering Waves`), 필요하면 추가 정리 항목을 체크한 뒤 [캐시 정리 실행]을 누름.
 
 ## 구성 파일
 
@@ -68,7 +69,7 @@ Wuthering Waves Shader Cache Cleaner · v1.1
 | --- | --- | --- |
 | Windows | `%LOCALAPPDATA%\D3DSCache` (디스크 정리의 'DirectX 셰이더 캐시') | 전체 |
 | NVIDIA | `%LOCALAPPDATA%\NVIDIA\DXCache` / `LocalLow\NVIDIA\PerDriverVersion\DXCache` | 전체 |
-| NVIDIA | `%ProgramData%\NVIDIA Corporation\NV_Cache` | 맨 위 파일만. NGX 등 하위 폴더는 보존 |
+| NVIDIA | `%ProgramData%\NVIDIA Corporation\NV_Cache` / `%LOCALAPPDATA%\NVIDIA Corporation\NV_Cache` | 맨 위 파일만. NGX 등 하위 폴더는 보존. 드라이버·환경에 따라 한쪽만 있거나 둘 다 없을 수 있음 |
 | AMD | `%LOCALAPPDATA%\AMD\` 아래 `DxCache`, `DxcCache` / `LocalLow\AMD\DxCache` | 전체 |
 | Intel | `%LOCALAPPDATA%\Intel\ShaderCache` / `LocalLow\Intel\ShaderCache` | 전체 |
 | 명조 | 등록한 클라이언트마다 `Client\Saved\PSO`, `Client\Saved\PSOReport` | 전체 |
@@ -84,7 +85,16 @@ Wuthering Waves Shader Cache Cleaner · v1.1
 | CUDA 캐시 | `%APPDATA%\NVIDIA\ComputeCache` | 영상 편집 등 GPU 가속 프로그램이 처음 한 번 다시 컴파일함 |
 | Steam 셰이더 캐시 전체 | 등록한 라이브러리마다 `steamapps\shadercache` | Steam이 게임 폴더 밖에 따로 관리하는 캐시. 모든 Steam 게임이 셰이더를 다시 만듦. Steam판 명조의 PSO(게임 폴더 안)와는 별개 |
 
-명조 경로는 설치 루트만 등록하면 됨. 프로그램이 `루트\Wuthering Waves Game\Client\Saved`(런처판)와 `루트\Client\Saved`(Steam판)를 차례로 확인해서 있는 쪽을 씀. Steam 라이브러리는 [자동 감지]로 레지스트리의 Steam 설치 위치와 `libraryfolders.vdf`를 읽어 찾을 수 있음.
+명조 경로는 설치 루트만 등록하면 됨. 프로그램이 `루트\Wuthering Waves Game\Client\Saved`(런처판·Epic판)와 `루트\Client\Saved`(Steam판, 게임 폴더를 직접 지정한 경우)를 차례로 확인해서 있는 쪽을 씀.
+
+### 자동 감지
+
+- **명조 경로 [자동 감지]**: 시간이 오래 걸리는 전체 디스크 검색은 하지 않고, 아래 위치만 빠르게 확인해서 `Client\Saved`가 있는 곳만 목록에 추가함.
+  - Steam 라이브러리의 `steamapps\common\Wuthering Waves`
+  - 고정 드라이브마다 `X:\Wuthering Waves`, `X:\Wuthering Waves Game`, `X:\Program Files\Wuthering Waves`, `X:\Games\Wuthering Waves` 등 흔한 위치
+  - Epic판 폴더 `X:\Program Files\Epic Games\WutheringWavesj3oFh`, `X:\Epic Games\WutheringWavesj3oFh`, `X:\WutheringWavesj3oFh`
+  - 이 밖의 위치에 설치했다면 [추가]로 직접 등록해야 함.
+- **Steam 라이브러리 [자동 감지]**: 레지스트리의 Steam 설치 위치와 `libraryfolders.vdf`를 읽어 찾음.
 
 ## 삭제와 결과 판정
 
@@ -100,11 +110,12 @@ Wuthering Waves Shader Cache Cleaner · v1.1
 
 ## 사용 시점과 주의할 점
 
-그래픽 드라이버를 업데이트했거나, Engine.ini를 바꿨거나, 게임 패치 뒤 스터터링이 생겼을 때 실행하면 됨. 매번 돌릴 필요는 없음.
+그래픽 드라이버 업데이트 후(DDU→재설치 포함), 게임 플레이 중 스터터링이 심할 때, 게임 버전 업데이트 후, Engine.ini를 순정으로 롤백한 후에 실행하면 됨. 매번 돌릴 필요는 없음.
 
+- 캐시를 더 완전히 비우고 싶으면 NVIDIA App에서 **Shader Cache Size를 Off**로 바꾸고 재부팅한 뒤 이 도구를 실행함. 이렇게 하면 NVIDIA 드라이버가 사용 중이어서 삭제되지 않고 `[WARN]`으로 표시되는 파일이 줄어 더 많이 지워짐. 정리 후에는 원래 쓰던 값(예: 100GB)으로 되돌리면 됨. NVIDIA 공식 안내에서는 Driver Default로 되돌리라고 하지만, 크기를 직접 지정해 쓰던 경우에는 그 값으로 복구하면 됨. 바꾸기 전에 현재 값을 기억해 둘 것. 이 도구가 설정을 바꾸지는 않음.
 - 정리 직후 첫 실행에서는 셰이더 컴파일이 다시 일어나서, 초반 몇 분은 이펙트가 처음 나올 때 끊김이 있을 수 있음.
 - 추가 정리 항목은 명조 스터터링 정리에는 필요 없음. 켜면 해당 게임·프로그램이 셰이더를 다시 만드는 동안 처음 한동안 느려질 수 있음.
-- 프로그램이 다루지 않는 것: Engine.ini 수정, 드라이버 제어판의 셰이더 캐시 크기 설정, 명조 외 게임의 자체 캐시 폴더.
+- 프로그램이 다루지 않는 것: Engine.ini 수정, NVIDIA App의 셰이더 캐시 크기 설정, 명조 외 게임의 자체 캐시 폴더.
 - 정리 대상 목록을 바꾸려면 `.ps1`의 `$GpuCaches`(기본)와 `$ExtraCaches`(추가 항목) 부분을 고치면 됨.
 
 ## 면책 조항
