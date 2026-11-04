@@ -1,0 +1,8 @@
+# Windows 스크립트는 체크아웃 시 항상 CRLF 유지
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# 문서
+*.md   text eol=lf
+LICENSE text eol=lf
