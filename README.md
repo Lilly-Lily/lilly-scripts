@@ -16,6 +16,7 @@
 | [WW-IMG-QuickEdit](WW-IMG-QuickEdit/) | 스크린샷 UID 자동 가리기, 크롭·리사이즈·포맷 변환 ([Release](https://github.com/Lilly-Lily/lilly-scripts/releases?q=WW-IMG-QuickEdit)) | 필요 없음 |
 | [WW-INI-Manager](WW-INI-Manager/) | 클라이언트별 `Engine.ini` 백업·삭제·이식·복원 ([Release](https://github.com/Lilly-Lily/lilly-scripts/releases?q=WW-INI-Manager)) | 필요 없음 (설치 위치에 따라 필요) |
 | [WWMI-DX12-Toggle](WWMI-DX12-Toggle/) | WWMI-DX12 파일을 백업 폴더로 이동하거나 복원하여 작동을 끄고 켜기 ([Release](https://github.com/Lilly-Lily/lilly-scripts/releases?q=WWMI-DX12-Toggle)) | 필요 없음 (설치 위치에 따라 필요) |
+| [WW-Tappo-Mouse-Move-Patch](WW-Tappo-Mouse-Move-Patch/) | WuwaTappo의 마우스 이동 처리 부하를 줄이는 1바이트 패치 (고폴링률 마우스용) ([Release](https://github.com/Lilly-Lily/lilly-scripts/releases?q=WW-Tappo-Mouse-Move-Patch)) | 필요 |
 
 ## 일반 도구
 
