@@ -7,6 +7,10 @@ WuwaTappo는 마우스가 움직일 때마다 이동 이벤트를 만들어 앱 
 > [!WARNING]
 > 이 도구는 `WuwaTappo.exe`를 직접 수정함. 사용 전에 [면책 조항](#면책-조항)을 반드시 읽을 것.
 
+## 다운로드
+
+[Release 페이지](https://github.com/Lilly-Lily/lilly-scripts/releases?q=WW-Tappo-Mouse-Move-Patch)에서 가장 최신 버전의 `WW-Tappo-Mouse-Move-Patch-v버전.zip`(예: `WW-Tappo-Mouse-Move-Patch-v1.0.3.zip`) 파일을 받을 수 있음. `Source code`는 저장소 전체 사본이므로 받지 말 것.
+
 ## 주요 기능
 
 - `WuwaTappo.exe` 안의 마우스 이동 이벤트 변환 부분을 1바이트 수정
