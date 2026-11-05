@@ -20,6 +20,7 @@ WuwaTappo는 마우스가 움직일 때마다 이동 이벤트를 만들어 앱 
 - Windows 10 / 11, Windows PowerShell 5.1 이상
 - 관리자 권한 (`C:\Program Files` 안의 파일을 수정하므로 실행 시 권한 확인창이 뜸)
 - 테스트된 버전: WuwaTappo `v1.0.3` (`WuwaTappo.exe` SHA256 `E872582D245A76B58737D4C281B7D62E22DF7BEB91B3E312FCE31448A23AB5E6`, 2026-10-29 빌드)
+- 패치 위치 확인된 버전: WuwaTappo `v1.0.4` (`WuwaTappo.exe` SHA256 `186701DADF56EFBBC4B44E071E2ED9DA831FA0F7FB298102C7A53909ADF77480`). 같은 스크립트로 적용·복원됨
 
 ## 사용법
 
