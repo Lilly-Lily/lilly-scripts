@@ -637,10 +637,16 @@ function Show-DeepScanDialog {
     [void](& $mk (& $newLabel '키워드') 12 62 66 20)
     $script:dgTxtKw = New-Object System.Windows.Forms.TextBox
     $script:dgTxtKw.Text = (@($script:DeepKeywords) -join ', ')
-    [void](& $mk $script:dgTxtKw 80 59 370 24)
+    [void](& $mk $script:dgTxtKw 80 59 280 24)
+    $btnKwDefault = New-Object System.Windows.Forms.Button
+    $btnKwDefault.Text = '기본값'
+    [void](& $mk $btnKwDefault 366 57 70 28)
     $lblKwHint = & $newLabel '쉼표로 구분'
     $lblKwHint.ForeColor = $ColorDim
-    [void](& $mk $lblKwHint 458 62 90 20)
+    [void](& $mk $lblKwHint 446 62 102 20)
+    $btnKwDefault.Add_Click({
+        $script:dgTxtKw.Text = (@((Get-DefaultSettings).DeepKeywords) -join ', ')
+    })
 
     [void](& $mk (& $newLabel '깊이') 12 94 66 20)
     $script:dgNumDepth = New-Object System.Windows.Forms.NumericUpDown

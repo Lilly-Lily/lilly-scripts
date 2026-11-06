@@ -96,7 +96,7 @@ Wuthering Waves Shader Cache Cleaner · v1.3
   - Epic판 폴더 `X:\Program Files\Epic Games\WutheringWavesj3oFh`, `X:\Epic Games\WutheringWavesj3oFh`, `X:\WutheringWavesj3oFh`
   - 이 밖의 위치에 설치했다면 [정밀 탐색] 또는 [추가]로 등록해야 함.
 - **명조 경로 [정밀 탐색]**: 드라이브 루트부터 폴더 이름을 단계별로 확인하는 방식이라 [자동 감지]보다 오래 걸림. 읽기만 하며 아무것도 지우거나 바꾸지 않음.
-  - **키워드**: 폴더 이름에 들어 있으면 후보로 보는 글자(쉼표로 구분, 대소문자 무시). 기본값은 `wuthering`, `wuwa`, `kuro`, `명조`. 설치 폴더 이름을 바꿨다면 그 이름의 일부를 추가하면 됨.
+  - **키워드**: 폴더 이름에 들어 있으면 후보로 보는 글자(쉼표로 구분, 대소문자 무시). 기본값은 `wuthering`, `wuwa`, `kuro`, `명조`이며 [기본값] 버튼으로 되돌릴 수 있음. 설치 폴더 이름을 바꿨다면 그 이름의 일부를 추가하면 됨.
   - **깊이**: 드라이브 루트를 0단계로 센 폴더 단계 수(기본 4, 최대 8). 예) `D:\Games\Kuro Games\Wuthering Waves`는 3단계. 깊을수록 오래 걸림.
   - 키워드가 맞는 폴더에 `Client\Saved`가 있으면 명조로 판단하고 그 아래로는 더 내려가지 않음. 키워드 폴더 바로 아래 한 단계도 함께 확인함.
   - `Windows`, `ProgramData`, `AppData`, 휴지통 같은 시스템 폴더와 바로가기·정션 폴더는 건너뜀.
