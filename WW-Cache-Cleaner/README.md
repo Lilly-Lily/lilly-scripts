@@ -1,6 +1,6 @@
 # 명조 셰이더 캐시 정리 도구
 
-Wuthering Waves Shader Cache Cleaner · v1.2
+Wuthering Waves Shader Cache Cleaner · v1.3
 
 명조(Wuthering Waves) 다중 클라이언트용 셰이더 캐시 정리 도구.
 
@@ -11,14 +11,15 @@ Wuthering Waves Shader Cache Cleaner · v1.2
 
 ## 다운로드
 
-[Release 페이지](https://github.com/Lilly-Lily/lilly-scripts/releases?q=WW-Cache-Cleaner)에서 가장 최신 버전의 `WW-Cache-Cleaner-v버전.zip`(예: `WW-Cache-Cleaner-v1.2.zip`) 파일을 받을 수 있음. `Source code`는 저장소 전체 사본이므로 받지 말 것.
+[Release 페이지](https://github.com/Lilly-Lily/lilly-scripts/releases?q=WW-Cache-Cleaner)에서 가장 최신 버전의 `WW-Cache-Cleaner-v버전.zip`(예: `WW-Cache-Cleaner-v1.3.zip`) 파일을 받을 수 있음. `Source code`는 저장소 전체 사본이므로 받지 말 것.
 
 ## 주요 기능
 
-- 명조 클라이언트 여러 개(런처판·Steam판·Epic판 혼용 가능)의 `PSO`, `PSOReport` 캐시 일괄 정리
+- 명조 클라이언트 여러 개(Kuro·Google·Steam·Epic판 혼용 가능)의 `PSO`, `PSOReport` 캐시 일괄 정리
 - Windows와 NVIDIA·AMD·Intel 드라이버의 DirectX 셰이더 캐시 정리
 - **추가 정리 항목**(선택, 기본값 꺼짐): OpenGL·Vulkan·CUDA·Steam 셰이더 캐시를 체크해서 함께 정리
-- 명조 설치 경로 자동 감지(Steam 라이브러리, 드라이브별 흔한 설치 위치, Epic판)
+- 명조 설치 경로 자동 감지(Steam 라이브러리, 드라이브별 흔한 설치 위치, Epic판). 처음 실행할 때 자동으로 한 번 실행함
+- **정밀 탐색**: 키워드와 깊이를 지정해 드라이브를 훑어서, 흔한 위치 밖에 설치한 명조도 찾음
 - Steam 라이브러리 자동 감지
 - 창(UI)에서 경로를 추가·변경·삭제하고 설정을 자동 저장
 - 진행 상황을 창과 로그 파일에 기록
@@ -35,7 +36,7 @@ Wuthering Waves Shader Cache Cleaner · v1.2
 2. 인터넷에서 받은 파일이라 실행이 막히면, `.ps1` 파일 속성에서 **차단 해제**를 체크함.
 3. 명조와 런처를 모두 종료함.
 4. `WWCacheCleaner.bat`을 더블클릭하고 UAC 창에서 [예]를 누름.
-5. [자동 감지]로 명조 설치 폴더를 찾거나 직접 등록하고(예: `D:\Wuthering Waves`), 필요하면 추가 정리 항목을 체크한 뒤 [캐시 정리 실행]을 누름.
+5. 처음 실행하면 명조 설치 폴더를 자동으로 찾아 목록에 넣어 줌. 못 찾았거나 빠진 게 있으면 [자동 감지]·[정밀 탐색]으로 찾거나 직접 등록하고(예: `D:\Wuthering Waves`), 필요하면 추가 정리 항목을 체크한 뒤 [캐시 정리 실행]을 누름.
 
 ## 구성 파일
 
@@ -43,7 +44,7 @@ Wuthering Waves Shader Cache Cleaner · v1.2
 | --- | --- |
 | `WWCacheCleaner.bat` | 실행 정책을 우회(`-ExecutionPolicy Bypass`)하고, 콘솔 창을 숨긴 채 `.ps1`을 실행하는 런처 |
 | `WWCacheCleaner.ps1` | 창(UI), 경로 판별, 캐시 삭제, 로그 기록을 모두 담당하는 본체 |
-| `settings.json` | 명조 경로, 추가 정리 항목 선택 상태, Steam 라이브러리 목록. 처음 실행할 때 생기고, 설정을 바꿀 때마다 자동 저장 |
+| `settings.json` | 명조 경로, 추가 정리 항목 선택 상태, Steam 라이브러리 목록, 정밀 탐색 키워드·깊이. 처음 실행할 때 생기고, 설정을 바꿀 때마다 자동 저장 |
 | `ShaderCacheCleanup.log` | 마지막 실행 결과. 실행할 때마다 새로 씀 |
 
 로직은 모두 `.ps1` 안에 있어서 메모장으로 열어 바로 확인하고 고칠 수 있음. `settings.json`과 로그 파일은 개인 환경 파일이라 저장소에 포함하지 않음.
@@ -52,7 +53,7 @@ Wuthering Waves Shader Cache Cleaner · v1.2
 
 1. **관리자 권한 확인**: 관리자가 아니면 UAC를 요청해 자기 자신을 관리자 권한으로 다시 실행함. `ProgramData`나 `Program Files` 아래 캐시를 지우려면 필요함.
 2. **준비**: 고해상도(DPI) 대응을 켜고, 탐색기 방식 폴더 선택 창(Windows의 `IFileOpenDialog`)을 C# 코드로 불러옴. 실패하면 기존 트리형 창으로 대체함.
-3. **설정 불러오기**: `settings.json`을 읽어 목록을 채우고, 경로마다 감지 상태를 표시함. 파일이 없으면 기본값으로 시작함.
+3. **설정 불러오기**: `settings.json`을 읽어 목록을 채우고, 경로마다 감지 상태를 표시함. 파일이 없으면(처음 실행) 자동 감지 결과로 목록을 채움. 아무것도 못 찾으면 빈 목록으로 시작하고 로그에 안내를 표시함.
 4. **실행 전 확인**: [캐시 정리 실행]을 누르면 명조 프로세스(`Client-Win64-Shipping`)가 떠 있는지 보고, 실행 중이면 계속할지 물어봄.
 5. **정리**: DirectX 셰이더 캐시 → 추가 정리 항목(선택한 것만, Steam 포함) → 명조 PSO 캐시 순서로 지우고, 한 줄씩 창과 로그 파일에 기록함.
 6. **요약**: 마지막에 OK·WARN·SKIP 개수를 출력하고 감지 상태를 새로 고침.
@@ -80,20 +81,26 @@ Wuthering Waves Shader Cache Cleaner · v1.2
 
 | 항목 | 대상 폴더 | 영향 |
 | --- | --- | --- |
-| OpenGL 셰이더 캐시 | `%LOCALAPPDATA%\NVIDIA\GLCache` / `LocalLow\NVIDIA\PerDriverVersion\GLCache` / `%LOCALAPPDATA%\AMD\GLCache` / `%LOCALAPPDATA%\AMD\OglpCache` | OpenGL 게임·프로그램이 셰이더를 다시 만듦 |
-| Vulkan 셰이더 캐시 | `%LOCALAPPDATA%\NVIDIA\VkCache` / `%LOCALAPPDATA%\AMD\VkCache` | Vulkan 게임이 셰이더를 다시 만듦 |
-| CUDA 캐시 | `%APPDATA%\NVIDIA\ComputeCache` | 영상 편집 등 GPU 가속 프로그램이 처음 한 번 다시 컴파일함 |
+| OpenGL 셰이더 캐시 | `%LOCALAPPDATA%\NVIDIA\GLCache` / `LocalLow\NVIDIA\PerDriverVersion\GLCache` / `%LOCALAPPDATA%\AMD\GLCache` / `%LOCALAPPDATA%\AMD\OglpCache` | OpenGL을 쓰는 게임·프로그램이 셰이더를 다시 만듦 |
+| Vulkan 셰이더 캐시 | `%LOCALAPPDATA%\NVIDIA\VkCache` / `%LOCALAPPDATA%\AMD\VkCache` | Vulkan을 쓰는 게임·프로그램이 셰이더를 다시 만듦 |
+| CUDA 캐시 | `%APPDATA%\NVIDIA\ComputeCache` | 주로 영상 편집 등 GPU 가속 프로그램에서 사용함. 해당 프로그램이 처음 한 번 다시 컴파일함 |
 | Steam 셰이더 캐시 전체 | 등록한 라이브러리마다 `steamapps\shadercache` | Steam이 게임 폴더 밖에 따로 관리하는 캐시. 모든 Steam 게임이 셰이더를 다시 만듦. Steam판 명조의 PSO(게임 폴더 안)와는 별개 |
 
-명조 경로는 설치 루트만 등록하면 됨. 프로그램이 `루트\Wuthering Waves Game\Client\Saved`(런처판·Epic판)와 `루트\Client\Saved`(Steam판, 게임 폴더를 직접 지정한 경우)를 차례로 확인해서 있는 쪽을 씀.
+명조 경로는 설치 루트만 등록하면 됨. 프로그램이 `루트\Wuthering Waves Game\Client\Saved`(Kuro·Google·Epic판)와 `루트\Client\Saved`(Steam판, 게임 폴더를 직접 지정한 경우)를 차례로 확인해서 있는 쪽을 씀.
 
 ### 자동 감지
 
 - **명조 경로 [자동 감지]**: 시간이 오래 걸리는 전체 디스크 검색은 하지 않고, 아래 위치만 빠르게 확인해서 `Client\Saved`가 있는 곳만 목록에 추가함.
-  - Steam 라이브러리의 `steamapps\common\Wuthering Waves`
+  - Steam 라이브러리의 `steamapps\common\Wuthering Waves`. `appmanifest_3513350.acf`에 적힌 `installdir` 폴더명도 함께 확인함
   - 고정 드라이브마다 `X:\Wuthering Waves`, `X:\Wuthering Waves Game`, `X:\Program Files\Wuthering Waves`, `X:\Games\Wuthering Waves` 등 흔한 위치
   - Epic판 폴더 `X:\Program Files\Epic Games\WutheringWavesj3oFh`, `X:\Epic Games\WutheringWavesj3oFh`, `X:\WutheringWavesj3oFh`
-  - 이 밖의 위치에 설치했다면 [추가]로 직접 등록해야 함.
+  - 이 밖의 위치에 설치했다면 [정밀 탐색] 또는 [추가]로 등록해야 함.
+- **명조 경로 [정밀 탐색]**: 드라이브 루트부터 폴더 이름을 단계별로 확인하는 방식이라 [자동 감지]보다 오래 걸림. 읽기만 하며 아무것도 지우거나 바꾸지 않음.
+  - **키워드**: 폴더 이름에 들어 있으면 후보로 보는 글자(쉼표로 구분, 대소문자 무시). 기본값은 `wuthering`, `wuwa`, `kuro`, `명조`. 설치 폴더 이름을 바꿨다면 그 이름의 일부를 추가하면 됨.
+  - **깊이**: 드라이브 루트를 0단계로 센 폴더 단계 수(기본 4, 최대 8). 예) `D:\Games\Kuro Games\Wuthering Waves`는 3단계. 깊을수록 오래 걸림.
+  - 키워드가 맞는 폴더에 `Client\Saved`가 있으면 명조로 판단하고 그 아래로는 더 내려가지 않음. 키워드 폴더 바로 아래 한 단계도 함께 확인함.
+  - `Windows`, `ProgramData`, `AppData`, 휴지통 같은 시스템 폴더와 바로가기·정션 폴더는 건너뜀.
+  - 탐색할 드라이브를 고르고, 진행 상황을 보면서 [중지]할 수 있음. 결과는 체크 목록으로 나오며, 체크한 항목만 경로 목록에 추가함. 새로 찾은 경로는 파란색 `추가 가능`, 이미 등록된 경로는 회색 `이미 등록됨`으로 표시하고 체크 없이 보여 줌.
 - **Steam 라이브러리 [자동 감지]**: 레지스트리의 Steam 설치 위치와 `libraryfolders.vdf`를 읽어 찾음.
 
 ## 삭제와 결과 판정
@@ -127,4 +134,4 @@ Wuthering Waves Shader Cache Cleaner · v1.2
 
 ## 라이선스
 
-[MIT License](../LICENSE)
+[MIT License](LICENSE)
