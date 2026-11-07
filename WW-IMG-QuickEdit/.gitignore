@@ -3,4 +3,4 @@ settings.json
 error.log
 
 # 테스트 결과물 (원본 옆에 자동 생성되는 기본 저장 폴더)
-masked/
+Result/

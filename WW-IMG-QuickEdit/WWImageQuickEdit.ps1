@@ -5,14 +5,15 @@
     WWImageQuickEdit.bat 더블클릭 → 뜨는 창에 이미지(여러 장)나 폴더를 드래그&드롭
     → [이전 설정 그대로] 또는 [새로 설정] 선택 → 처리
     (bat 아이콘 위에 직접 드롭하면 마지막 설정으로 바로 처리)
-  결과는 기본적으로 원본 옆 'masked' 폴더에 저장됩니다. (설정에서 저장 폴더 직접 지정 가능)
+  결과는 기본적으로 원본 옆 'Result' 폴더에 저장됩니다. (설정에서 저장 폴더 직접 지정 가능)
   파일명 끝에 작업 일시가 붙습니다. 예) 스샷_20261031-181700.jpg
-  지원 형식: png, jpg, jpeg, bmp  /  저장: 원본 유지, PNG, JPG
+  지원 형식: png, jpg, jpeg, bmp  /  저장: 원본 유지, PNG, JPG(품질 조절 가능)
 #>
 
 $ErrorActionPreference = 'Stop'
 $DropArgs = @($args)
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$AppVersion = '1.1'   # 창 제목에 표시되는 버전
 
 # ===================== 고정 설정 =====================
 # UID 영역: 4K(3840x2160) 기준 px 단위, @(가까운 쪽, 먼 쪽) 거리
@@ -27,13 +28,14 @@ $LetterboxBand      = 0.04
 $LetterboxMaxBright = 6
 $LetterboxMinRatio  = 0.03   # 띠 자동 제거 시, 띠 두께가 이 비율 이상일 때만 자름
 
-$PixelBlock = 14             # 모자이크 블록 크기(px)
-$BlurRadius = 14             # 블러 강도 (Python 버전과 같은 기준)
-$FillColor  = @(0, 0, 0)     # 단색 덮기 색상 (R, G, B)
-$JpgQuality = 95
-$Preview    = $false         # $true: 가리지 않고 빨간 박스만 그림 (위치 확인용)
+# 블러 강도·모자이크 블록 크기·단색 색상·JPG 품질은 작업 설정 창에서 바꿈 (기본값은 아래 $Defaults)
+$StrengthMin   = 8           # 블러 강도·모자이크 블록 크기 허용 범위 (너무 약하면 UID가 읽힐 수 있음)
+$StrengthMax   = 60
+$ScaleStrength = $true       # 블러·모자이크 강도를 해상도에 맞춰 조정 (설정값은 4K 기준). $false면 px 그대로 적용
+$Preview       = $false      # $true: 가리지 않고 빨간 박스만 그림 (위치 확인용)
 
-$OutDirName      = 'masked'
+$OutDirName      = 'Result'
+$OldOutDirNames  = @('masked')           # 이전 버전의 결과 폴더 이름 (하위 폴더까지 처리할 때 건너뜀)
 $AddTimestamp    = $true                # 결과 파일명 끝에 작업 일시 추가
 $TimestampFormat = 'yyyyMMdd-HHmmss'    # 예) 20261031-181700
 $Exts            = @('.png', '.jpg', '.jpeg', '.bmp')
@@ -42,21 +44,31 @@ $LogFile         = Join-Path $ScriptDir 'error.log'
 
 # 작업 옵션 기본값 (창에서 선택한 값은 SettingsFile에 저장되어 다음에 재사용)
 $Defaults = [ordered]@{
-    mask         = $true
-    mask_mode    = 'blur'        # blur | pixelate | fill
-    crop         = 'none'        # none | letterbox | custom
-    crop_box     = @(0.0, 0.0, 1.0, 1.0)
-    resize       = $false
-    resize_width = 1920
-    format       = 'original'    # original | png | jpg
-    out_custom   = $false        # $true면 out_dir에 저장, $false면 원본 폴더\masked
-    out_dir      = ''
+    mask           = $true
+    mask_mode      = 'blur'        # blur | pixelate | fill
+    blur_radius    = 14            # 블러 강도 (4K 기준)
+    pixel_block    = 14            # 모자이크 블록 크기 (4K 기준)
+    fill_color     = '#000000'     # 단색 덮기 색상
+    crop           = 'none'        # none | letterbox | custom
+    crop_unit      = 'percent'     # percent | px
+    crop_margin    = @(0.0, 0.0, 0.0, 0.0)   # 각 가장자리에서 잘라낼 양: 왼쪽, 위, 오른쪽, 아래
+    resize         = $false
+    resize_unit    = 'percent'     # percent | px
+    resize_percent = 50
+    resize_width   = 1920
+    format         = 'original'    # original | png | jpg
+    jpg_quality    = 95
+    out_custom     = $false        # $true면 out_dir에 저장, $false면 원본 폴더\Result
+    out_dir        = ''
+    keep_structure = $false        # 직접 지정 저장 시 하위 폴더까지 처리하고 원본 폴더 구조 유지
+    last_out       = ''            # 최근 결과 폴더 (자동 기록)
 }
 # =====================================================
 
 $MaskModes = [ordered]@{ blur = '블러'; pixelate = '모자이크'; fill = '단색 덮기' }
 $CropModes = [ordered]@{ none = '안 함'; letterbox = '시네마틱 검은 띠 제거'; custom = '직접 지정' }
 $Formats   = [ordered]@{ original = '원본 유지'; png = 'PNG'; jpg = 'JPG' }
+$Units     = [ordered]@{ percent = '비율 (%)'; px = '픽셀 (px)' }
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -91,12 +103,16 @@ public class UidOpts
     public double[] CineBottom = new double[] { -19, 54 };
     public double DeskRatioMin = 1.70;
     public double DeskRatioMax = 1.85;
-    public int PixelBlock = 14;
-    public double BlurRadius = 14;
+    public int PixelBlock = 14;          // 4K 기준
+    public double BlurRadius = 14;       // 4K 기준
+    public bool ScaleStrength = true;    // 강도를 해상도에 맞춰 조정
     public int FillR = 0, FillG = 0, FillB = 0;
     public string Crop = "none";
-    public double[] CropBox = new double[] { 0, 0, 1, 1 };
+    public string CropUnit = "percent";  // percent | px
+    public double[] CropMargin = new double[] { 0, 0, 0, 0 };   // 왼쪽, 위, 오른쪽, 아래에서 잘라낼 양
     public bool Resize = false;
+    public string ResizeUnit = "percent";   // percent | px
+    public double ResizePercent = 50;
     public int ResizeWidth = 1920;
     public long JpgQuality = 95;
     public double LbBand = 0.04;
@@ -124,7 +140,8 @@ public static class UidImg
             bool cine = IsCinematic(rows, o);
             int[] lb = cine ? LetterboxRows(rows, bmp.Height, o) : null;
             string layout;
-            Rectangle r = UidBox(bmp.Width, bmp.Height, cine, lb, o, out layout);
+            double scale;
+            Rectangle r = UidBox(bmp.Width, bmp.Height, cine, lb, o, out layout, out scale);
             notes.Add(layout);
 
             // 1) UID 가리기
@@ -139,8 +156,16 @@ public static class UidImg
                 else
                 {
                     if (o.MaskMode == "fill") Fill(buf, stride, r, o);
-                    else if (o.MaskMode == "pixelate") Pixelate(buf, stride, r, Math.Max(1, o.PixelBlock));
-                    else Blur(buf, stride, r, o.BlurRadius);
+                    else if (o.MaskMode == "pixelate")
+                    {
+                        int blk = o.ScaleStrength ? (int)Math.Round(o.PixelBlock * scale) : o.PixelBlock;
+                        Pixelate(buf, stride, r, Math.Max(2, blk));
+                    }
+                    else
+                    {
+                        double sg = o.ScaleStrength ? o.BlurRadius * scale : o.BlurRadius;
+                        Blur(buf, stride, r, Math.Max(1.0, sg));
+                    }
                     SetBytes(bmp, buf);
                 }
             }
@@ -156,18 +181,31 @@ public static class UidImg
             }
             else if (o.Crop == "custom")
             {
-                Rectangle c = RatioBox(bmp.Width, bmp.Height, o.CropBox);
+                Rectangle c = CropRect(bmp.Width, bmp.Height, o);
                 if (c.Width > 0 && c.Height > 0)
                 {
-                    bmp = Swap(bmp, bmp.Clone(c, PixelFormat.Format32bppArgb));
-                    notes.Add("crop");
+                    if (c.Width != bmp.Width || c.Height != bmp.Height)
+                    {
+                        bmp = Swap(bmp, bmp.Clone(c, PixelFormat.Format32bppArgb));
+                        notes.Add("crop");
+                    }
                 }
+                else notes.Add("cropskip");   // 잘라낼 양이 이미지보다 커서 건너뜀
             }
 
             // 3) 리사이즈 (확대는 안 함)
-            if (o.Resize && o.ResizeWidth > 0 && bmp.Width > o.ResizeWidth)
+            int nw = 0;
+            if (o.Resize)
             {
-                int nw = o.ResizeWidth;
+                if (o.ResizeUnit == "percent")
+                {
+                    if (o.ResizePercent > 0 && o.ResizePercent < 100)
+                        nw = Math.Max(1, (int)Math.Round(bmp.Width * o.ResizePercent / 100.0));
+                }
+                else nw = o.ResizeWidth;
+            }
+            if (nw > 0 && nw < bmp.Width)
+            {
                 int nh = Math.Max(1, (int)Math.Round(bmp.Height * (double)nw / bmp.Width));
                 bmp = Swap(bmp, ResizeHQ(bmp, nw, nh));
                 notes.Add("w" + nw);
@@ -183,7 +221,7 @@ public static class UidImg
     }
 
     // UID 영역 계산: 크기 배율 = min(가로/3840, 세로/2160), 오른쪽·아래 가장자리 기준
-    static Rectangle UidBox(int w, int h, bool cine, int[] lb, UidOpts o, out string layout)
+    static Rectangle UidBox(int w, int h, bool cine, int[] lb, UidOpts o, out string layout, out double scale)
     {
         double s, edge;
         double[] rr, bb;
@@ -202,6 +240,7 @@ public static class UidImg
             bb = mobile ? o.MobBottom : o.DeskBottom;
             edge = h; layout = mobile ? "mobile" : "normal";
         }
+        scale = s;
         int l = Clamp((int)(w - rr[1] * s), 0, w);
         int t = Clamp((int)(edge - bb[1] * s), 0, h);
         int r = Clamp((int)Math.Ceiling(w - rr[0] * s), 0, w);
@@ -252,13 +291,21 @@ public static class UidImg
         b.UnlockBits(d);
     }
 
-    static Rectangle RatioBox(int w, int h, double[] b)
+    // 크롭: 각 가장자리에서 잘라낼 양(비율 % 또는 px)을 뺀 나머지 영역
+    static Rectangle CropRect(int w, int h, UidOpts o)
     {
-        int l = Clamp((int)(w * b[0]), 0, w);
-        int t = Clamp((int)(h * b[1]), 0, h);
-        int r = Clamp((int)(w * b[2]), 0, w);
-        int btm = Clamp((int)(h * b[3]), 0, h);
-        return new Rectangle(l, t, Math.Max(0, r - l), Math.Max(0, btm - t));
+        double l = Math.Max(0, o.CropMargin[0]), t = Math.Max(0, o.CropMargin[1]);
+        double r = Math.Max(0, o.CropMargin[2]), b = Math.Max(0, o.CropMargin[3]);
+        if (o.CropUnit == "percent")
+        {
+            l = w * l / 100.0; r = w * r / 100.0;
+            t = h * t / 100.0; b = h * b / 100.0;
+        }
+        int x0 = Clamp((int)Math.Round(l), 0, w);
+        int y0 = Clamp((int)Math.Round(t), 0, h);
+        int x1 = Clamp((int)Math.Round(w - r), 0, w);
+        int y1 = Clamp((int)Math.Round(h - b), 0, h);
+        return new Rectangle(x0, y0, Math.Max(0, x1 - x0), Math.Max(0, y1 - y0));
     }
 
     // 각 행의 평균 밝기 (ITU-R 601 휘도)
@@ -456,6 +503,488 @@ try {
     Show-Error ("이미지 처리 모듈을 준비하지 못했습니다.`r`n`r`n" + $_.Exception.Message) -Fatal
 }
 
+# ---------------- 화면 부품 (C#, 창을 띄울 때 자동 컴파일) ----------------
+$UiCode = @'
+using System;
+using System.IO;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+
+public static class UiUtil
+{
+    public static readonly TextFormatFlags Flags = TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix;
+
+    public static GraphicsPath Round(RectangleF r, float rad)
+    {
+        GraphicsPath p = new GraphicsPath();
+        float d = Math.Max(0.1f, rad * 2);
+        p.AddArc(r.X, r.Y, d, d, 180, 90);
+        p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        p.CloseFigure();
+        return p;
+    }
+
+    public static Size Measure(string text, Font f)
+    {
+        return TextRenderer.MeasureText(text, f, new Size(int.MaxValue, int.MaxValue), Flags);
+    }
+}
+
+// 알약 모양 선택 버튼 (같은 Group 안에서 하나만 선택되는 라디오 방식)
+public class Chip : Control
+{
+    bool chk, hover;
+    Color swatch = Color.Empty;
+    public double S = 1.0;
+    public string Group = "";
+    public bool HasSwatch = false;
+    public event EventHandler CheckedChanged;
+
+    public Chip()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
+                 | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+        Cursor = Cursors.Hand;
+        TabStop = true;
+    }
+
+    public bool Checked
+    {
+        get { return chk; }
+        set
+        {
+            if (chk == value) return;
+            chk = value;
+            Invalidate();
+            if (CheckedChanged != null) CheckedChanged(this, EventArgs.Empty);
+        }
+    }
+
+    public Color Swatch
+    {
+        get { return swatch; }
+        set { swatch = value; Invalidate(); }
+    }
+
+    public void Fit()
+    {
+        using (Font b = new Font(Font, FontStyle.Bold))
+        {
+            Size ts = UiUtil.Measure(Text, b);
+            int padX = (int)Math.Round(14 * S), padY = (int)Math.Round(5 * S);
+            int sw = HasSwatch ? (int)Math.Round(20 * S) : 0;
+            this.Size = new Size(ts.Width + 2 * padX + sw, ts.Height + 2 * padY);
+        }
+    }
+
+    protected override void OnClick(EventArgs e)
+    {
+        base.OnClick(e);
+        if (!Enabled || chk) return;
+        chk = true;
+        Invalidate();
+        if (Parent != null && Group.Length > 0)
+        {
+            foreach (Control c in Parent.Controls)
+            {
+                Chip o = c as Chip;
+                if (o != null && o != this && o.Group == Group) o.Checked = false;
+            }
+        }
+        if (CheckedChanged != null) CheckedChanged(this, EventArgs.Empty);
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter) { OnClick(EventArgs.Empty); e.Handled = true; }
+    }
+
+    protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { hover = false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+    protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
+    protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
+    protected override void OnTextChanged(EventArgs e) { Invalidate(); base.OnTextChanged(e); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.Clear(BackColor);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+        Color fill = Color.White, border = Color.FromArgb(201, 201, 201), text = Color.FromArgb(51, 51, 51);
+        if (!Enabled)
+        {
+            fill = Color.FromArgb(247, 247, 247); border = Color.FromArgb(225, 225, 225); text = Color.FromArgb(160, 160, 160);
+            if (chk) { fill = Color.FromArgb(240, 246, 252); border = Color.FromArgb(175, 203, 232); }
+        }
+        else if (chk) { fill = Color.FromArgb(234, 243, 253); border = Color.FromArgb(0, 103, 192); text = Color.FromArgb(11, 79, 148); }
+        else if (hover) { fill = Color.FromArgb(249, 249, 249); border = Color.FromArgb(140, 140, 140); }
+
+        using (GraphicsPath p = UiUtil.Round(r, r.Height / 2f))
+        using (SolidBrush b = new SolidBrush(fill))
+        using (Pen pen = new Pen(border, chk ? 1.5f : 1f))
+        {
+            g.FillPath(b, p);
+            g.DrawPath(pen, p);
+        }
+
+        int sw = 0;
+        if (HasSwatch)
+        {
+            sw = (int)Math.Round(20 * S);
+            int d = (int)Math.Round(12 * S);
+            Rectangle sr = new Rectangle((int)Math.Round(11 * S), (Height - d) / 2, d, d);
+            using (SolidBrush sb = new SolidBrush(swatch.IsEmpty ? Color.White : swatch))
+            using (Pen sp = new Pen(Color.FromArgb(150, 150, 150)))
+            {
+                g.FillRectangle(sb, sr);
+                g.DrawRectangle(sp, sr);
+            }
+        }
+        Rectangle tr = new Rectangle(sw, 0, Width - sw, Height);
+        if (chk)
+        {
+            using (Font bf = new Font(Font, FontStyle.Bold))
+                TextRenderer.DrawText(g, Text, bf, tr, text, UiUtil.Flags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
+        else TextRenderer.DrawText(g, Text, Font, tr, text, UiUtil.Flags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+
+        if (Focused && ShowFocusCues)
+            ControlPaint.DrawFocusRectangle(g, new Rectangle(3, 3, Width - 6, Height - 6));
+    }
+}
+
+// 켜고 끄는 토글 스위치 (체크박스 대용)
+public class ToggleSwitch : Control
+{
+    bool chk;
+    public double S = 1.0;
+    public event EventHandler CheckedChanged;
+
+    public ToggleSwitch()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
+                 | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+        Cursor = Cursors.Hand;
+        TabStop = true;
+    }
+
+    public bool Checked
+    {
+        get { return chk; }
+        set
+        {
+            if (chk == value) return;
+            chk = value;
+            Invalidate();
+            if (CheckedChanged != null) CheckedChanged(this, EventArgs.Empty);
+        }
+    }
+
+    public void Fit()
+    {
+        Size ts = UiUtil.Measure(Text, Font);
+        int track = (int)Math.Round(36 * S), gap = (int)Math.Round(8 * S), padY = (int)Math.Round(4 * S);
+        this.Size = new Size(track + gap + ts.Width + (int)Math.Round(4 * S), Math.Max((int)Math.Round(20 * S), ts.Height) + 2 * padY);
+    }
+
+    protected override void OnClick(EventArgs e)
+    {
+        base.OnClick(e);
+        if (Enabled) Checked = !chk;
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (e.KeyCode == Keys.Space) { OnClick(EventArgs.Empty); e.Handled = true; }
+    }
+
+    protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+    protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
+    protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.Clear(BackColor);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        float tw = (float)(36 * S), th = (float)(18 * S);
+        float ty = (Height - th) / 2f;
+        RectangleF tr = new RectangleF(1f, ty, tw, th);
+        Color on = Enabled ? Color.FromArgb(0, 103, 192) : Color.FromArgb(150, 190, 225);
+        Color off = Enabled ? Color.FromArgb(150, 150, 150) : Color.FromArgb(205, 205, 205);
+        using (GraphicsPath p = UiUtil.Round(tr, th / 2f))
+        using (SolidBrush b = new SolidBrush(chk ? on : off))
+            g.FillPath(b, p);
+        float d = (float)(12 * S), m = (th - d) / 2f;
+        float kx = chk ? tr.Right - m - d : tr.X + m;
+        using (SolidBrush kb = new SolidBrush(Color.White))
+            g.FillEllipse(kb, kx, ty + m, d, d);
+        Rectangle txt = new Rectangle((int)(tw + 8 * S), 0, Width - (int)(tw + 8 * S), Height);
+        TextRenderer.DrawText(g, Text, Font, txt, Enabled ? Color.FromArgb(27, 27, 27) : Color.FromArgb(150, 150, 150),
+            UiUtil.Flags | TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+        if (Focused && ShowFocusCues)
+            ControlPaint.DrawFocusRectangle(g, new Rectangle(0, 0, Width, Height));
+    }
+}
+
+// 둥근 모서리 흰색 카드 (세로로 쌓이는 패널)
+public class Card : FlowLayoutPanel
+{
+    public double S = 1.0;
+
+    public Card()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
+                 | ControlStyles.ResizeRedraw, true);
+        BackColor = Color.White;
+        FlowDirection = FlowDirection.TopDown;
+        WrapContents = false;
+        AutoSize = true;
+        AutoSizeMode = AutoSizeMode.GrowAndShrink;
+    }
+
+    protected override void OnPaintBackground(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.Clear(Parent != null ? Parent.BackColor : SystemColors.Control);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+        using (GraphicsPath p = UiUtil.Round(r, (float)(8 * S)))
+        using (SolidBrush b = new SolidBrush(BackColor))
+        using (Pen pen = new Pen(Color.FromArgb(226, 226, 226)))
+        {
+            g.FillPath(b, p);
+            g.DrawPath(pen, p);
+        }
+    }
+
+    protected override void OnPaint(PaintEventArgs e) { }
+}
+
+// 둥근 모서리 흰색 카드 (Dock/Anchor로 배치하는 패널)
+public class CardPanel : Panel
+{
+    public double S = 1.0;
+
+    public CardPanel()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
+                 | ControlStyles.ResizeRedraw, true);
+        BackColor = Color.White;
+    }
+
+    protected override void OnPaintBackground(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.Clear(Parent != null ? Parent.BackColor : SystemColors.Control);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+        using (GraphicsPath p = UiUtil.Round(r, (float)(8 * S)))
+        using (SolidBrush b = new SolidBrush(BackColor))
+        using (Pen pen = new Pen(Color.FromArgb(226, 226, 226)))
+        {
+            g.FillPath(b, p);
+            g.DrawPath(pen, p);
+        }
+    }
+
+    protected override void OnPaint(PaintEventArgs e) { }
+}
+
+// 둥근 모서리 버튼 (Primary: 진한 테두리·굵은 글씨)
+public class RoundButton : Button
+{
+    bool hover, down;
+    public double S = 1.0;
+    public bool Primary = false;
+    public int MinW = 0;
+
+    public RoundButton()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
+                 | ControlStyles.ResizeRedraw, true);
+        Cursor = Cursors.Hand;
+    }
+
+    public void Fit()
+    {
+        using (Font f = new Font(Font, Primary ? FontStyle.Bold : FontStyle.Regular))
+        {
+            Size ts = UiUtil.Measure(Text, f);
+            int w = ts.Width + 2 * (int)Math.Round(18 * S);
+            int h = ts.Height + 2 * (int)Math.Round(8 * S);
+            this.Size = new Size(Math.Max(w, MinW), h);
+        }
+    }
+
+    protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { hover = false; down = false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnMouseDown(MouseEventArgs e) { down = true; Invalidate(); base.OnMouseDown(e); }
+    protected override void OnMouseUp(MouseEventArgs e) { down = false; Invalidate(); base.OnMouseUp(e); }
+    protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+    protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
+    protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
+    protected override void OnTextChanged(EventArgs e) { Invalidate(); base.OnTextChanged(e); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.Clear(Parent != null ? Parent.BackColor : SystemColors.Control);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        RectangleF r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+        Color fill = Color.White, border = Primary ? Color.FromArgb(110, 110, 110) : Color.FromArgb(201, 201, 201);
+        Color text = Color.FromArgb(27, 27, 27);
+        if (!Enabled) { fill = Color.FromArgb(247, 247, 247); border = Color.FromArgb(225, 225, 225); text = Color.FromArgb(160, 160, 160); }
+        else if (down) { fill = Color.FromArgb(232, 232, 232); }
+        else if (hover) { fill = Color.FromArgb(244, 244, 244); border = Color.FromArgb(150, 150, 150); }
+        using (GraphicsPath p = UiUtil.Round(r, (float)(6 * S)))
+        using (SolidBrush b = new SolidBrush(fill))
+        using (Pen pen = new Pen(border, Primary ? 1.5f : 1f))
+        {
+            g.FillPath(b, p);
+            g.DrawPath(pen, p);
+        }
+        using (Font f = new Font(Font, Primary ? FontStyle.Bold : FontStyle.Regular))
+            TextRenderer.DrawText(g, Text, f, new Rectangle(0, 0, Width, Height), text,
+                UiUtil.Flags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        if (Focused && ShowFocusCues)
+            ControlPaint.DrawFocusRectangle(g, new Rectangle(4, 4, Width - 8, Height - 8));
+    }
+}
+
+// 점선 테두리 드롭 영역 (State: 0 대기, 1 드래그 중, 2 처리 중)
+public class DropZone : Control
+{
+    int state;
+    public double S = 1.0;
+
+    public DropZone()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
+                 | ControlStyles.ResizeRedraw, true);
+        AllowDrop = true;
+    }
+
+    public int State
+    {
+        get { return state; }
+        set { state = value; Invalidate(); }
+    }
+
+    protected override void OnTextChanged(EventArgs e) { Invalidate(); base.OnTextChanged(e); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.Clear(Parent != null ? Parent.BackColor : SystemColors.Control);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        Color fill = Color.White, line = Color.FromArgb(154, 163, 173), text = Color.FromArgb(85, 85, 85);
+        if (state == 1) { fill = Color.FromArgb(234, 243, 253); line = Color.FromArgb(0, 103, 192); text = Color.FromArgb(11, 79, 148); }
+        else if (state == 2) { fill = Color.FromArgb(244, 244, 244); line = Color.FromArgb(190, 190, 190); text = Color.FromArgb(130, 130, 130); }
+        float w = (float)(2 * S);
+        RectangleF r = new RectangleF(w, w, Width - 2 * w - 1, Height - 2 * w - 1);
+        using (GraphicsPath p = UiUtil.Round(r, (float)(10 * S)))
+        using (SolidBrush b = new SolidBrush(fill))
+        using (Pen pen = new Pen(line, w))
+        {
+            pen.DashStyle = DashStyle.Dash;
+            g.FillPath(b, p);
+            g.DrawPath(pen, p);
+        }
+        TextRenderer.DrawText(g, Text, Font, new Rectangle(0, 0, Width, Height), text,
+            UiUtil.Flags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+    }
+}
+
+// 윈도우 탐색기 스타일 폴더 선택 창 (IFileOpenDialog)
+public static class FolderPicker
+{
+    [ComImport, Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]
+    class FileOpenDialogCom { }
+
+    [ComImport, Guid("d57c7288-d4ad-4768-be02-9d969532d960"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IFileOpenDialog
+    {
+        [PreserveSig] int Show(IntPtr parent);
+        void SetFileTypes(uint cFileTypes, IntPtr rgFilterSpec);
+        void SetFileTypeIndex(uint iFileType);
+        void GetFileTypeIndex(out uint piFileType);
+        void Advise(IntPtr pfde, out uint pdwCookie);
+        void Unadvise(uint dwCookie);
+        void SetOptions(uint fos);
+        void GetOptions(out uint pfos);
+        void SetDefaultFolder(IShellItem psi);
+        void SetFolder(IShellItem psi);
+        void GetFolder(out IShellItem ppsi);
+        void GetCurrentSelection(out IShellItem ppsi);
+        void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+        void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string pszName);
+        void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
+        void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);
+        void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
+        void GetResult(out IShellItem ppsi);
+        void AddPlace(IShellItem psi, int fdap);
+        void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);
+        void Close(int hr);
+        void SetClientGuid(ref Guid guid);
+        void ClearClientData();
+        void SetFilter(IntPtr pFilter);
+        void GetResults(out IntPtr ppenum);
+        void GetSelectedItems(out IntPtr ppsai);
+    }
+
+    [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellItem
+    {
+        void BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppv);
+        void GetParent(out IShellItem ppsi);
+        void GetDisplayName(uint sigdnName, [MarshalAs(UnmanagedType.LPWStr)] out string ppszName);
+        void GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
+        void Compare(IShellItem psi, uint hint, out int piOrder);
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+    static extern void SHCreateItemFromParsingName(string path, IntPtr pbc, ref Guid riid, out IShellItem item);
+
+    // 선택한 폴더 경로, 취소하면 null
+    public static string Pick(IntPtr owner, string title, string initial)
+    {
+        IFileOpenDialog dlg = (IFileOpenDialog)new FileOpenDialogCom();
+        try
+        {
+            uint opts;
+            dlg.GetOptions(out opts);
+            dlg.SetOptions(opts | 0x20 | 0x40 | 0x800);   // 폴더 선택 | 파일 시스템만 | 경로 존재
+            if (!string.IsNullOrEmpty(title)) dlg.SetTitle(title);
+            if (!string.IsNullOrEmpty(initial) && Directory.Exists(initial))
+            {
+                Guid iid = new Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe");
+                IShellItem si;
+                SHCreateItemFromParsingName(initial, IntPtr.Zero, ref iid, out si);
+                dlg.SetFolder(si);
+            }
+            int hr = dlg.Show(owner);
+            if (hr == unchecked((int)0x800704C7)) return null;   // 사용자가 취소
+            if (hr != 0) Marshal.ThrowExceptionForHR(hr);
+            IShellItem res;
+            dlg.GetResult(out res);
+            string path;
+            res.GetDisplayName(0x80058000, out path);          // 파일 시스템 경로
+            return path;
+        }
+        finally { Marshal.ReleaseComObject(dlg); }
+    }
+}
+'@
+
 # ---------------- 설정 저장/불러오기 ----------------
 function Copy-Opts($src) {
     $n = [ordered]@{}
@@ -467,6 +996,14 @@ function Copy-Opts($src) {
     return $n
 }
 
+function Get-Num($v, [double]$def, [double]$min, [double]$max) {
+    $d = 0.0
+    if (-not [double]::TryParse(([string]$v), [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$d)) { $d = $def }
+    if ($d -lt $min) { $d = $min }
+    if ($d -gt $max) { $d = $max }
+    return $d
+}
+
 function Load-Opts {
     if (-not (Test-Path -LiteralPath $SettingsFile)) { return $null }
     try {
@@ -474,15 +1011,35 @@ function Load-Opts {
         $o = Copy-Opts $Defaults
         $names = @($j.PSObject.Properties | ForEach-Object { $_.Name })
         foreach ($k in @($o.Keys)) { if ($names -contains $k) { $o[$k] = $j.$k } }
-        $o['mask']         = [bool]$o['mask']
-        $o['resize']       = [bool]$o['resize']
-        $o['out_custom']   = [bool]$o['out_custom']
-        $o['resize_width'] = [int]$o['resize_width']
-        $o['out_dir']      = [string]$o['out_dir']
-        $o['crop_box']     = [double[]]@($o['crop_box'])
-        if ($o['crop_box'].Count -ne 4) { $o['crop_box'] = [double[]]@(0, 0, 1, 1) }
+        # 이전 버전 설정(crop_box: 왼쪽·위·오른쪽·아래 좌표 비율 0~1)을 '잘라낼 양(%)'으로 변환
+        if (($names -contains 'crop_box') -and -not ($names -contains 'crop_margin')) {
+            $cb = @($j.crop_box)
+            if ($cb.Count -eq 4) {
+                $o['crop_unit']   = 'percent'
+                $o['crop_margin'] = @(([double]$cb[0] * 100), ([double]$cb[1] * 100), ((1 - [double]$cb[2]) * 100), ((1 - [double]$cb[3]) * 100))
+            }
+        }
+        # 이전 버전 설정은 리사이즈 단위가 없고 가로 px만 있었음
+        if (($names -contains 'resize_width') -and -not ($names -contains 'resize_unit')) { $o['resize_unit'] = 'px' }
+        $o['mask']           = [bool]$o['mask']
+        $o['resize']         = [bool]$o['resize']
+        $o['out_custom']     = [bool]$o['out_custom']
+        $o['out_dir']        = [string]$o['out_dir']
+        $o['keep_structure'] = [bool]$o['keep_structure']
+        $o['last_out']       = [string]$o['last_out']
+        $o['blur_radius']    = [int](Get-Num $o['blur_radius'] 14 $StrengthMin $StrengthMax)
+        $o['pixel_block']    = [int](Get-Num $o['pixel_block'] 14 $StrengthMin $StrengthMax)
+        $o['jpg_quality']    = [int](Get-Num $o['jpg_quality'] 95 1 100)
+        $o['resize_percent'] = (Get-Num $o['resize_percent'] 50 1 100)
+        $o['resize_width']   = [int](Get-Num $o['resize_width'] 1920 16 100000)
+        if (([string]$o['fill_color']) -notmatch '^#[0-9A-Fa-f]{6}$') { $o['fill_color'] = $Defaults['fill_color'] }
+        $m = @($o['crop_margin'])
+        if ($m.Count -ne 4) { $m = @(0, 0, 0, 0) }
+        $o['crop_margin'] = [double[]]@($m | ForEach-Object { Get-Num $_ 0 0 1000000 })
         if (-not $MaskModes.Contains([string]$o['mask_mode'])) { $o['mask_mode'] = $Defaults['mask_mode'] }
         if (-not $CropModes.Contains([string]$o['crop']))      { $o['crop'] = 'none' }
+        if (-not $Units.Contains([string]$o['crop_unit']))     { $o['crop_unit'] = 'percent' }
+        if (-not $Units.Contains([string]$o['resize_unit']))   { $o['resize_unit'] = 'percent' }
         if (-not $Formats.Contains([string]$o['format']))      { $o['format'] = 'original' }
         return $o
     } catch { return $null }
@@ -496,15 +1053,32 @@ function Use-CustomOut($o) {
     return [bool]($o['out_custom'] -and ([string]$o['out_dir']).Trim())
 }
 
+function Use-Structure($o) {
+    return [bool]((Use-CustomOut $o) -and $o['keep_structure'])
+}
+
 function Get-Desc($o) {
     $l = New-Object System.Collections.Generic.List[string]
-    if ($o['mask']) { $l.Add('가리기: ' + $MaskModes[[string]$o['mask_mode']]) } else { $l.Add('가리기: 안 함') }
+    if ($o['mask']) {
+        $mm = [string]$o['mask_mode']
+        $extra = switch ($mm) { 'blur' { ' ' + $o['blur_radius'] } 'pixelate' { ' ' + $o['pixel_block'] } 'fill' { ' ' + $o['fill_color'] } default { '' } }
+        $l.Add('가리기: ' + $MaskModes[$mm] + $extra)
+    } else { $l.Add('가리기: 안 함') }
     if ($o['crop'] -eq 'custom') {
-        $l.Add('크롭: 직접 지정 ' + ((@($o['crop_box']) | ForEach-Object { '{0:g}' -f $_ }) -join ', '))
+        $u = if ($o['crop_unit'] -eq 'px') { ' px' } else { '%' }
+        $l.Add('크롭: 자를 양(좌·상·우·하) ' + ((@($o['crop_margin']) | ForEach-Object { '{0:g}' -f $_ }) -join ', ') + $u)
     } else { $l.Add('크롭: ' + $CropModes[[string]$o['crop']]) }
-    if ($o['resize']) { $l.Add('리사이즈: 가로 ' + $o['resize_width'] + 'px') } else { $l.Add('리사이즈: 안 함') }
-    $l.Add('포맷: ' + $Formats[[string]$o['format']])
-    if (Use-CustomOut $o) { $l.Add('저장: ' + ([string]$o['out_dir']).Trim()) } else { $l.Add("저장: 원본 폴더\$OutDirName") }
+    if ($o['resize']) {
+        if ($o['resize_unit'] -eq 'px') { $l.Add('리사이즈: 가로 ' + $o['resize_width'] + 'px') }
+        else { $l.Add('리사이즈: ' + ('{0:g}' -f $o['resize_percent']) + '%') }
+    } else { $l.Add('리사이즈: 안 함') }
+    $fm = 'PNG'
+    $fmt = [string]$o['format']
+    if ($fmt -eq 'original') { $fm = '원본 유지' } elseif ($fmt -eq 'jpg') { $fm = 'JPG ' + $o['jpg_quality'] + '%' }
+    $l.Add('포맷: ' + $fm)
+    if (Use-CustomOut $o) {
+        $l.Add('저장: ' + ([string]$o['out_dir']).Trim() + $(if ($o['keep_structure']) { ' (원본 폴더 구조 유지, 하위 폴더 포함)' } else { '' }))
+    } else { $l.Add("저장: 원본 폴더\$OutDirName") }
     return ,$l.ToArray()
 }
 
@@ -516,20 +1090,71 @@ function Write-Log([string]$m) {
     } else { Write-Host $m }
 }
 
-function Get-Files($paths) {
-    $list = New-Object System.Collections.Generic.List[System.IO.FileInfo]
+function Test-Under([string]$path, [string]$dir) {
+    if (-not $dir) { return $false }
+    return $path.StartsWith(($dir.TrimEnd('\') + '\'), [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+# 결과 폴더 아래에 만들 하위 폴더 이름 (같은 이름의 서로 다른 폴더는 _2, _3 …로 구분)
+function Get-GroupName([string]$root, $names, $used) {
+    $key = $root.TrimEnd('\').ToLowerInvariant()
+    if ($names.ContainsKey($key)) { return $names[$key] }
+    $base = [System.IO.Path]::GetFileName($root.TrimEnd('\'))
+    if (-not $base) { $base = $root.TrimEnd('\', '/', ':') -replace '[\\/:]', '_' }
+    if (-not $base) { $base = 'root' }
+    $n = $base; $k = 2
+    while ($used.Contains($n)) { $n = $base + '_' + $k; $k++ }
+    [void]$used.Add($n)
+    $names[$key] = $n
+    return $n
+}
+
+# 처리 대상 목록. File: 파일, Sub: 지정 결과 폴더 아래 하위 경로 ('원본 폴더 구조 유지'일 때만 사용)
+function Get-Jobs($paths, $o) {
+    $jobs = New-Object System.Collections.Generic.List[object]
+    $keep = Use-Structure $o
+    $outDir = ''
+    if (Use-CustomOut $o) { $outDir = ([string]$o['out_dir']).Trim() }
+    $seen  = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $used  = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $names = @{}
     foreach ($p in $paths) {
         if ([System.IO.Directory]::Exists($p)) {
-            Get-ChildItem -LiteralPath $p -File |
-                Where-Object { $Exts -contains $_.Extension.ToLower() } |
-                Sort-Object Name |
-                ForEach-Object { $list.Add($_) }
+            if ($keep) {
+                # 하위 폴더까지 모두 처리 (지정 결과 폴더·'Result'(이전 'masked') 폴더 안 파일은 제외)
+                $root  = [System.IO.Path]::GetFullPath($p).TrimEnd('\')
+                $group = Get-GroupName $root $names $used
+                $all = @(Get-ChildItem -LiteralPath $p -File -Recurse -ErrorAction SilentlyContinue |
+                    Where-Object { $Exts -contains $_.Extension.ToLower() } | Sort-Object FullName)
+                foreach ($fi in $all) {
+                    if (Test-Under $fi.FullName $outDir) { continue }
+                    $rel = $fi.DirectoryName.Substring($root.Length).Trim('\')
+                    $skip = $false
+                    foreach ($seg in ($rel -split '\\')) { if ($seg -and (($seg -ieq $OutDirName) -or ($OldOutDirNames -contains $seg))) { $skip = $true } }
+                    if ($skip) { continue }
+                    if (-not $seen.Add($fi.FullName)) { continue }
+                    $sub = $group
+                    if ($rel) { $sub = $group + '\' + $rel }
+                    $jobs.Add([pscustomobject]@{ File = $fi; Sub = $sub })
+                }
+            } else {
+                $all = @(Get-ChildItem -LiteralPath $p -File |
+                    Where-Object { $Exts -contains $_.Extension.ToLower() } | Sort-Object Name)
+                foreach ($fi in $all) {
+                    if (-not $seen.Add($fi.FullName)) { continue }
+                    $jobs.Add([pscustomobject]@{ File = $fi; Sub = '' })
+                }
+            }
         } elseif ([System.IO.File]::Exists($p)) {
             $fi = New-Object System.IO.FileInfo -ArgumentList $p
-            if ($Exts -contains $fi.Extension.ToLower()) { $list.Add($fi) }
+            if (($Exts -contains $fi.Extension.ToLower()) -and $seen.Add($fi.FullName)) {
+                $sub = ''
+                if ($keep) { $sub = Get-GroupName ([string]$fi.DirectoryName) $names $used }
+                $jobs.Add([pscustomobject]@{ File = $fi; Sub = $sub })
+            }
         }
     }
-    return ,$list.ToArray()
+    return ,$jobs.ToArray()
 }
 
 function New-CsOpts($o) {
@@ -544,14 +1169,21 @@ function New-CsOpts($o) {
     $c.CineBottom   = [double[]]$UidCineBottom
     $c.DeskRatioMin = [double]$DesktopRatio[0]
     $c.DeskRatioMax = [double]$DesktopRatio[1]
-    $c.PixelBlock   = [int]$PixelBlock
-    $c.BlurRadius   = [double]$BlurRadius
-    $c.FillR = [int]$FillColor[0]; $c.FillG = [int]$FillColor[1]; $c.FillB = [int]$FillColor[2]
+    $c.PixelBlock   = [int]$o['pixel_block']
+    $c.BlurRadius   = [double]$o['blur_radius']
+    $c.ScaleStrength = [bool]$ScaleStrength
+    $hex = [string]$o['fill_color']
+    $c.FillR = [Convert]::ToInt32($hex.Substring(1, 2), 16)
+    $c.FillG = [Convert]::ToInt32($hex.Substring(3, 2), 16)
+    $c.FillB = [Convert]::ToInt32($hex.Substring(5, 2), 16)
     $c.Crop         = [string]$o['crop']
-    $c.CropBox      = [double[]]@($o['crop_box'])
+    $c.CropUnit     = [string]$o['crop_unit']
+    $c.CropMargin   = [double[]]@($o['crop_margin'])
     $c.Resize       = [bool]$o['resize']
+    $c.ResizeUnit   = [string]$o['resize_unit']
+    $c.ResizePercent = [double]$o['resize_percent']
     $c.ResizeWidth  = [int]$o['resize_width']
-    $c.JpgQuality   = [long]$JpgQuality
+    $c.JpgQuality   = [long]$o['jpg_quality']
     $c.LbBand       = [double]$LetterboxBand
     $c.LbMaxBright  = [double]$LetterboxMaxBright
     $c.LbMinRatio   = [double]$LetterboxMinRatio
@@ -567,6 +1199,7 @@ function Convert-Notes([string]$tokens) {
             '^mobile$' { '휴대폰' }
             '^lb$'     { '띠 제거' }
             '^crop$'   { '크롭' }
+            '^cropskip$' { '크롭 건너뜀(범위 초과)' }
             '^w(\d+)$' { $Matches[1] + 'px' }
         }
     }
@@ -587,24 +1220,28 @@ function Get-OutputPath([string]$outDir, [string]$stem, [string]$ext) {
 }
 
 function Invoke-Batch($paths, $o) {
-    $files = Get-Files $paths
-    if ($files.Count -eq 0) {
+    $jobs = Get-Jobs $paths $o
+    if ($jobs.Count -eq 0) {
         Write-Log '처리할 이미지가 없습니다. (지원 형식: png, jpg, jpeg, bmp)'
         return
     }
     $cs = New-CsOpts $o
-    $n = $files.Count; $i = 0; $ok = 0
-    foreach ($f in $files) {
+    $n = $jobs.Count; $i = 0; $ok = 0
+    foreach ($job in $jobs) {
+        $f = $job.File
         $i++
         try {
             $ext = if ($o['format'] -eq 'original') { $f.Extension.ToLower() } else { '.' + $o['format'] }
-            if (Use-CustomOut $o) { $outDir = ([string]$o['out_dir']).Trim() }
-            else { $outDir = [System.IO.Path]::Combine($f.DirectoryName, $OutDirName) }
+            if (Use-CustomOut $o) {
+                $outDir = ([string]$o['out_dir']).Trim()
+                if ($job.Sub) { $outDir = [System.IO.Path]::Combine($outDir, [string]$job.Sub) }
+            } else { $outDir = [System.IO.Path]::Combine($f.DirectoryName, $OutDirName) }
             [void][System.IO.Directory]::CreateDirectory($outDir)
             $out = Get-OutputPath $outDir $f.BaseName $ext
             $note = Convert-Notes ([UidImg]::Process($f.FullName, $out, $cs))
             $ok++
-            $shown = (Split-Path -Leaf $outDir) + '\' + (Split-Path -Leaf $out)
+            if ($job.Sub) { $shown = [string]$job.Sub + '\' + (Split-Path -Leaf $out) }
+            else { $shown = (Split-Path -Leaf $outDir) + '\' + (Split-Path -Leaf $out) }
             Write-Log ('[{0}/{1}] OK  {2} ({3}) -> {4}' -f $i, $n, $f.Name, $note, $shown)
         } catch {
             $e = $_.Exception
@@ -623,80 +1260,164 @@ function New-Pad([int]$l, [int]$t = -1, [int]$r = -1, [int]$b = -1) {
     return New-Object System.Windows.Forms.Padding -ArgumentList $l, $t, $r, $b
 }
 
-function New-Flow([string]$dir = 'LeftToRight') {
+function New-Size([int]$w, [int]$h) { return New-Object System.Drawing.Size -ArgumentList $w, $h }
+function New-Rgb([int]$r, [int]$g, [int]$b) { return [System.Drawing.Color]::FromArgb($r, $g, $b) }
+
+# 카드 폭 / 카드 안쪽 폭
+function Get-CardW  { return (P 520) }
+function Get-InnerW { return ((P 520) - 2 * (P 16)) }
+
+function New-Flow([string]$dir = 'LeftToRight', [bool]$wrap = $false) {
     $p = New-Object System.Windows.Forms.FlowLayoutPanel
     $p.FlowDirection = $dir
-    $p.WrapContents  = $false
+    $p.WrapContents  = $wrap
     $p.AutoSize      = $true
     $p.AutoSizeMode  = 'GrowAndShrink'
     $p.Margin        = New-Pad 0
+    if ($wrap) { $p.MaximumSize = New-Size (Get-InnerW) 0 }
     return $p
 }
 
 function New-Label([string]$text) {
     $c = New-Object System.Windows.Forms.Label
     $c.Text = $text; $c.AutoSize = $true; $c.Anchor = 'Left'
-    $c.Margin = New-Pad (P 3) (P 5) (P 3) (P 5)
+    $c.Margin = New-Pad 0 (P 5) (P 6) (P 5)
     return $c
 }
 
-function New-Hint([string]$text) {
-    $c = New-Label $text
-    $c.ForeColor = [System.Drawing.Color]::FromArgb(110, 110, 110)
-    $c.Margin = New-Pad (P 3) (P 1) (P 3) (P 1)
+# 설명 글: $warn 이면 주의 색
+function New-Hint([string]$text, [bool]$warn = $false) {
+    $c = New-Object System.Windows.Forms.Label
+    $c.Text = $text; $c.AutoSize = $true
+    $c.Font = $script:FontSmall
+    $c.MaximumSize = New-Size (Get-InnerW) 0
+    $c.ForeColor = if ($warn) { New-Rgb 138 90 0 } else { New-Rgb 119 119 119 }
+    $c.Margin = New-Pad 0 (P 2) 0 0
     return $c
 }
 
-function New-Check([string]$text, [bool]$checked) {
-    $c = New-Object System.Windows.Forms.CheckBox
-    $c.Text = $text; $c.Checked = $checked; $c.AutoSize = $true; $c.Anchor = 'Left'
-    $c.Margin = New-Pad (P 3) (P 4) (P 10) (P 4)
+function New-Chip([string]$text, [bool]$checked, [string]$group) {
+    $c = New-Object Chip
+    $c.S = $script:Scale; $c.Font = $script:Font
+    $c.Text = $text; $c.Group = $group
+    $c.Checked = $checked
+    $c.Fit()
+    $c.Margin = New-Pad (P 2) (P 3) (P 4) (P 3)
     return $c
 }
 
-function New-Radio([string]$text, [bool]$checked) {
-    $c = New-Object System.Windows.Forms.RadioButton
-    $c.Text = $text; $c.Checked = $checked; $c.AutoSize = $true; $c.Anchor = 'Left'
-    $c.Margin = New-Pad (P 3) (P 4) (P 10) (P 4)
+function New-Toggle([string]$text, [bool]$on) {
+    $c = New-Object ToggleSwitch
+    $c.S = $script:Scale; $c.Font = $script:Font
+    $c.Text = $text
+    $c.Checked = $on
+    $c.Fit()
     return $c
 }
 
-function New-Button([string]$text) {
-    $c = New-Object System.Windows.Forms.Button
+function New-Button([string]$text, [bool]$primary = $false, [int]$minW = 84) {
+    $c = New-Object RoundButton
+    $c.S = $script:Scale; $c.Font = $script:Font
+    $c.Text = $text; $c.Primary = $primary
+    $c.MinW = P $minW
+    $c.Fit()
+    $c.Anchor = 'Left'
+    $c.Margin = New-Pad (P 4) (P 4) (P 4) (P 4)
+    return $c
+}
+
+function New-Input([double]$width, [string]$text) {
+    $t = New-Object System.Windows.Forms.TextBox
+    $t.Width = P $width; $t.Anchor = 'Left'
+    $t.Margin = New-Pad (P 2) (P 3) (P 8) (P 3)
+    $t.Text = $text
+    return $t
+}
+
+function New-LinkLabel([string]$text) {
+    $c = New-Object System.Windows.Forms.Label
     $c.Text = $text; $c.AutoSize = $true; $c.Anchor = 'Left'
-    $c.MinimumSize = New-Object System.Drawing.Size -ArgumentList (P 84), (P 30)
-    $c.Padding = New-Pad (P 6) 0 (P 6) 0
-    $c.Margin  = New-Pad 0 (P 4) (P 8) (P 4)
+    $c.Font = $script:FontSmall
+    $c.ForeColor = New-Rgb 0 103 192
+    $c.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $c.Margin = New-Pad (P 6) (P 5) 0 (P 5)
     return $c
 }
 
-function New-Group([string]$text, $inner) {
-    $g = New-Object System.Windows.Forms.GroupBox
-    $g.Text = $text
-    $g.AutoSize = $true; $g.AutoSizeMode = 'GrowAndShrink'
-    $g.Padding = New-Pad (P 8) (P 4) (P 8) (P 8)
-    $g.Margin  = New-Pad 0 0 0 (P 8)
-    $g.MinimumSize = New-Object System.Drawing.Size -ArgumentList (P 520), 0
-    $inner.Location = New-Object System.Drawing.Point -ArgumentList (P 10), ([int]($script:Font.Height * 1.4))
-    $g.Controls.Add($inner)
-    return $g
+# 카드: 폭 고정, 높이는 내용에 맞춤
+function New-Card {
+    $c = New-Object Card
+    $c.S = $script:Scale
+    $w = Get-CardW
+    $c.MinimumSize = New-Size $w 0
+    $c.MaximumSize = New-Size $w 0
+    $c.Padding = New-Pad (P 16) (P 12) (P 16) (P 14)
+    $c.Margin  = New-Pad 0 0 0 (P 10)
+    return $c
+}
+
+# 카드 제목줄: 왼쪽 제목, 오른쪽 토글(선택)
+function New-Header([string]$title, $toggle = $null) {
+    $p = New-Object System.Windows.Forms.Panel
+    $p.Size = New-Size (Get-InnerW) (P 30)
+    $p.Margin = New-Pad 0 0 0 (P 6)
+    if ($toggle) { $toggle.Dock = 'Right'; $p.Controls.Add($toggle) }
+    $l = New-Object System.Windows.Forms.Label
+    $l.Text = $title; $l.AutoSize = $true; $l.Dock = 'Left'
+    $l.TextAlign = 'MiddleLeft'
+    $l.Font = $script:FontTitle
+    $p.Controls.Add($l)
+    return $p
+}
+
+# 슬라이더 + 숫자 입력 한 줄 (강도·품질용)
+function New-SliderRow([string]$label, [int]$min, [int]$max, [int]$val, [string]$unit) {
+    $row = New-Flow
+    $row.Controls.Add((New-Label $label))
+    $tr = New-Object System.Windows.Forms.TrackBar
+    $tr.Minimum = $min; $tr.Maximum = $max
+    $tr.Value = [Math]::Max($min, [Math]::Min($max, $val))
+    $tr.TickStyle = 'None'; $tr.AutoSize = $false
+    $tr.Size = New-Size (P 220) (P 30)
+    $tr.Margin = New-Pad 0 0 (P 6) 0
+    $tr.Anchor = 'Left'
+    $num = New-Object System.Windows.Forms.NumericUpDown
+    $num.Minimum = $min; $num.Maximum = $max
+    $num.Value = $tr.Value
+    $num.Width = P 58; $num.Anchor = 'Left'
+    $num.Margin = New-Pad 0 (P 3) (P 2) (P 3)
+    $tr.Tag = $num; $num.Tag = $tr
+    $tr.add_ValueChanged({ param($s, $e) if ([int]$s.Tag.Value -ne $s.Value) { $s.Tag.Value = $s.Value } })
+    $num.add_ValueChanged({ param($s, $e) $v = [int]$s.Value; if ($s.Tag.Value -ne $v) { $s.Tag.Value = $v } })
+    $row.Controls.Add($tr); $row.Controls.Add($num)
+    if ($unit) { $ul = New-Label $unit; $ul.Margin = New-Pad (P 3) (P 5) (P 6) (P 5); $row.Controls.Add($ul) }
+    $link = New-LinkLabel '기본값으로'
+    $link.Tag = @{ Num = $num; Def = $val }
+    $link.add_Click({ param($s, $e) $s.Tag.Num.Value = $s.Tag.Def })
+    $row.Controls.Add($link)
+    return @{ Row = $row; Track = $tr; Num = $num }
 }
 
 function New-Dialog([string]$title) {
     $d = New-Object System.Windows.Forms.Form
     $d.Text = $title
     $d.Font = $script:Font
+    $d.BackColor = $script:ColBg
     $d.FormBorderStyle = 'FixedDialog'
     $d.MaximizeBox = $false; $d.MinimizeBox = $false; $d.ShowInTaskbar = $false
     $d.StartPosition = 'CenterParent'
     $d.TopMost = $true
-    $d.AutoSize = $true; $d.AutoSizeMode = 'GrowAndShrink'
-    $d.Padding = New-Pad (P 12)
     return $d
 }
 
 function Show-Warn([string]$msg) {
     [void][System.Windows.Forms.MessageBox]::Show($script:SD.Form, $msg, '입력 확인', 'OK', 'Warning')
+}
+
+# 칩 묶음에서 선택된 항목의 키
+function Get-Checked($chips, [string]$default) {
+    foreach ($k in $chips.Keys) { if ($chips[$k].Checked) { return $k } }
+    return $default
 }
 
 # ---------------- 선택지: 이전 설정 사용 vs 새로 설정 ----------------
@@ -705,21 +1426,35 @@ function Show-ChoiceDialog($prev, [int]$count) {
     $root = New-Flow 'TopDown'
 
     $h = New-Label "${count}개 항목을 받았습니다. 어떻게 처리할까요?"
-    $h.Font = New-Object System.Drawing.Font -ArgumentList 'Malgun Gothic', 10.5, ([System.Drawing.FontStyle]::Bold)
-    $h.Margin = New-Pad 0 0 0 (P 8)
+    $h.Font = $script:FontTitle
+    $h.Margin = New-Pad (P 2) 0 0 (P 10)
     $root.Controls.Add($h)
 
-    $desc = New-Label ((Get-Desc $prev) -join "`r`n")
-    $root.Controls.Add((New-Group ' 이전 설정 ' $desc))
+    $card = New-Card
+    $card.Controls.Add((New-Header '이전 설정'))
+    foreach ($line in (Get-Desc $prev)) {
+        $lb = New-Label $line
+        $lb.MaximumSize = New-Size (Get-InnerW) 0
+        $lb.Margin = New-Pad 0 (P 2) 0 (P 2)
+        $card.Controls.Add($lb)
+    }
+    $root.Controls.Add($card)
 
-    $btns = New-Flow
-    $b1 = New-Button '① 이전 설정 그대로'; $b1.DialogResult = 'Yes'
-    $b2 = New-Button '② 새로 설정';       $b2.DialogResult = 'No'
+    $btns = New-Flow 'RightToLeft'
+    $btns.Width = Get-CardW
+    $btns.AutoSize = $false
+    $btns.Height = P 44
     $b3 = New-Button '취소';              $b3.DialogResult = 'Cancel'
-    $btns.Controls.Add($b1); $btns.Controls.Add($b2); $btns.Controls.Add($b3)
+    $b2 = New-Button '새로 설정';         $b2.DialogResult = 'No'
+    $b1 = New-Button '이전 설정 그대로' $true;  $b1.DialogResult = 'Yes'
+    $btns.Controls.Add($b3); $btns.Controls.Add($b2); $btns.Controls.Add($b1)
     $root.Controls.Add($btns)
 
     $d.Controls.Add($root)
+    $root.Location = New-Object System.Drawing.Point -ArgumentList (P 16), (P 14)
+    $root.PerformLayout()
+    $pref = $root.PreferredSize
+    $d.ClientSize = New-Size ($pref.Width + (P 32)) ($pref.Height + (P 24))   # 좌우 여백 같게
     $d.AcceptButton = $b1
     $d.CancelButton = $b3
     $r = $d.ShowDialog($script:Main)
@@ -730,59 +1465,142 @@ function Show-ChoiceDialog($prev, [int]$count) {
 }
 
 # ---------------- 작업 설정 창 ----------------
+# 내용 높이에 맞춰 창 크기를 조절 (화면보다 길면 스크롤)
+function Update-DialogSize {
+    $sd = $script:SD
+    $d = $sd.Form
+    $sd.Root.PerformLayout()
+    $pref = $sd.Root.PreferredSize
+    $wa = [System.Windows.Forms.Screen]::FromControl($script:Main).WorkingArea
+    $need = $pref.Height + (P 16) + $sd.Footer.Height
+    $maxH = [int]($wa.Height * 0.92)
+    $h = [Math]::Min($need, $maxH)
+    $w = $pref.Width + (P 32)
+    if ($need -gt $maxH) { $w += [System.Windows.Forms.SystemInformation]::VerticalScrollBarWidth }
+    $d.ClientSize = New-Size $w $h
+    if ($d.Visible) {
+        if ($d.Bottom -gt $wa.Bottom) { $d.Top = [Math]::Max($wa.Top, $wa.Bottom - $d.Height) }
+        if ($d.Right -gt $wa.Right) { $d.Left = [Math]::Max($wa.Left, $wa.Right - $d.Width) }
+    }
+}
+
+function Update-FillPreview {
+    $sd = $script:SD
+    $hex = [string]$sd.FillColor
+    $sd.FillPreview.BackColor = [System.Drawing.ColorTranslator]::FromHtml($hex)
+    $sd.FillText.Text = $hex.ToUpper()
+}
+
 function Update-SettingsState {
     $sd = $script:SD
-    foreach ($rb in $sd.MaskRadios.Values) { $rb.Enabled = $sd.MaskCheck.Checked }
-    $custom = $sd.CropRadios['custom'].Checked
-    foreach ($tb in $sd.BoxTexts) { $tb.Enabled = $custom }
-    $sd.Combo.Enabled  = $sd.ResizeCheck.Checked
-    $sd.OutBox.Enabled = $sd.OutCheck.Checked
+    # UID 가리기
+    $maskOn = $sd.MaskToggle.Checked
+    $sd.MaskBody.Enabled = $maskOn
+    $mode = Get-Checked $sd.MaskChips 'blur'
+    $sd.BlurRow.Visible = ($mode -eq 'blur')
+    $sd.PixRow.Visible  = ($mode -eq 'pixelate')
+    $sd.FillRow.Visible = ($mode -eq 'fill')
+
+    # 크롭
+    $custom = ((Get-Checked $sd.CropChips 'none') -eq 'custom')
+    $sd.CropBody.Enabled = $custom
+    $sd.CropSuffix.Text = if ((Get-Checked $sd.CUnitChips 'percent') -eq 'px') { 'px' } else { '%' }
+
+    # 리사이즈
+    $sd.ResizeBody.Enabled = $sd.ResizeToggle.Checked
+    $unit = Get-Checked $sd.RUnitChips 'percent'
+    if ($sd.ResizeUnitShown -ne $unit) {
+        $sd.ResizeVals[$sd.ResizeUnitShown] = $sd.RCombo.Text
+        $sd.RCombo.Items.Clear()
+        $items = if ($unit -eq 'px') { @('3840', '2560', '1920', '1600', '1280') } else { @('75', '50', '25') }
+        foreach ($v in $items) { [void]$sd.RCombo.Items.Add($v) }
+        $sd.RCombo.Text = [string]$sd.ResizeVals[$unit]
+        $sd.ResizeUnitShown = $unit
+    }
+    $sd.RSuffix.Text = if ($unit -eq 'px') { 'px' } else { '%' }
+
+    # 저장 포맷 / 위치
+    $sd.JpgBody.Visible = ((Get-Checked $sd.FmtChips 'original') -eq 'jpg')
+    $sd.OutBox.Enabled = $sd.OutToggle.Checked
+    $sd.KeepToggle.Enabled = $sd.OutToggle.Checked
+
+    Update-DialogSize
 }
 
 function Confirm-Settings {
     $sd = $script:SD
     $inv = [System.Globalization.CultureInfo]::InvariantCulture
-    $box = New-Object System.Collections.Generic.List[double]
+    $flt = [System.Globalization.NumberStyles]::Float
+
+    $crop  = Get-Checked $sd.CropChips 'none'
+    $cunit = Get-Checked $sd.CUnitChips 'percent'
+    $mode  = Get-Checked $sd.MaskChips 'blur'
+    $fmt   = Get-Checked $sd.FmtChips 'original'
+    $runit = Get-Checked $sd.RUnitChips 'percent'
+
+    # 크롭: 가장자리에서 잘라낼 양
+    $m = New-Object System.Collections.Generic.List[double]
     foreach ($tb in $sd.BoxTexts) {
         $v = 0.0
-        if (-not [double]::TryParse($tb.Text.Trim(), [System.Globalization.NumberStyles]::Float, $inv, [ref]$v)) {
-            Show-Warn '크롭 비율에는 숫자를 입력해 주세요.'; return
-        }
-        $box.Add($v)
+        if ($crop -eq 'custom') {
+            if (-not [double]::TryParse($tb.Text.Trim(), $flt, $inv, [ref]$v) -or $v -lt 0) {
+                Show-Warn '크롭 값에는 0 이상의 숫자를 입력해 주세요.'; return
+            }
+        } else { [void][double]::TryParse($tb.Text.Trim(), $flt, $inv, [ref]$v); if ($v -lt 0) { $v = 0.0 } }
+        $m.Add($v)
     }
-    $w = 0
-    if (-not [int]::TryParse($sd.Combo.Text.Trim(), [ref]$w)) { Show-Warn '리사이즈 가로 값은 숫자로 입력해 주세요.'; return }
-
-    $mode = 'blur'; foreach ($k in $sd.MaskRadios.Keys) { if ($sd.MaskRadios[$k].Checked) { $mode = $k } }
-    $crop = 'none'; foreach ($k in $sd.CropRadios.Keys) { if ($sd.CropRadios[$k].Checked) { $crop = $k } }
-    $fmt  = 'original'; foreach ($k in $sd.FmtRadios.Keys) { if ($sd.FmtRadios[$k].Checked) { $fmt = $k } }
-
-    if ($crop -eq 'custom') {
-        $l = $box[0]; $t = $box[1]; $r = $box[2]; $b = $box[3]
-        if (-not (0 -le $l -and $l -lt $r -and $r -le 1 -and 0 -le $t -and $t -lt $b -and $b -le 1)) {
-            Show-Warn '크롭 비율은 0~1 사이, 왼쪽<오른쪽, 위<아래여야 해요.'; return
+    if ($crop -eq 'custom' -and $cunit -eq 'percent') {
+        if (($m[0] + $m[2]) -ge 100 -or ($m[1] + $m[3]) -ge 100) {
+            Show-Warn '비율 크롭은 왼쪽+오른쪽, 위+아래가 각각 100% 미만이어야 해요.'; return
         }
     }
-    if ($sd.ResizeCheck.Checked -and $w -lt 16) { Show-Warn '리사이즈 가로 값이 너무 작아요.'; return }
+
+    # 리사이즈
+    $sd.ResizeVals[$sd.ResizeUnitShown] = $sd.RCombo.Text
+    $pct = Get-Num $sd.ResizeVals['percent'] 50 1 100
+    $wpx = [int](Get-Num $sd.ResizeVals['px'] 1920 16 100000)
+    if ($sd.ResizeToggle.Checked) {
+        $d0 = 0.0
+        $txt = ([string]$sd.ResizeVals[$runit]).Trim()
+        if ($runit -eq 'percent') {
+            if (-not [double]::TryParse($txt, $flt, $inv, [ref]$d0) -or $d0 -lt 1 -or $d0 -gt 100) {
+                Show-Warn '리사이즈 비율은 1~100 사이 숫자로 입력해 주세요.'; return
+            }
+            $pct = $d0
+        } else {
+            if (-not [double]::TryParse($txt, $flt, $inv, [ref]$d0) -or $d0 -lt 16) {
+                Show-Warn '리사이즈 가로 값은 16 이상의 숫자로 입력해 주세요.'; return
+            }
+            $wpx = [int][Math]::Round($d0)
+        }
+    }
 
     $outDir = $sd.OutBox.Text.Trim()
-    if ($sd.OutCheck.Checked) {
+    if ($sd.OutToggle.Checked) {
         if (-not $outDir) { Show-Warn '저장 폴더를 지정해 주세요.'; return }
         if (-not [System.IO.Path]::IsPathRooted($outDir)) {
-            Show-Warn "저장 폴더는 전체 경로로 지정해 주세요.`r`n(예: D:\Screenshots\masked)"; return
+            Show-Warn "저장 폴더는 전체 경로로 지정해 주세요.`r`n(예: D:\Screenshots\Result)"; return
         }
     }
 
     $o = [ordered]@{
-        mask         = $sd.MaskCheck.Checked
-        mask_mode    = $mode
-        crop         = $crop
-        crop_box     = [double[]]$box.ToArray()
-        resize       = $sd.ResizeCheck.Checked
-        resize_width = $w
-        format       = $fmt
-        out_custom   = $sd.OutCheck.Checked
-        out_dir      = $outDir
+        mask           = $sd.MaskToggle.Checked
+        mask_mode      = $mode
+        blur_radius    = [int]$sd.BlurUi.Num.Value
+        pixel_block    = [int]$sd.PixUi.Num.Value
+        fill_color     = [string]$sd.FillColor
+        crop           = $crop
+        crop_unit      = $cunit
+        crop_margin    = [double[]]$m.ToArray()
+        resize         = $sd.ResizeToggle.Checked
+        resize_unit    = $runit
+        resize_percent = $pct
+        resize_width   = $wpx
+        format         = $fmt
+        jpg_quality    = [int]$sd.JpgUi.Num.Value
+        out_custom     = $sd.OutToggle.Checked
+        out_dir        = $outDir
+        keep_structure = [bool]($sd.OutToggle.Checked -and $sd.KeepToggle.Checked)
     }
     if (-not ($o.mask -or $o.crop -ne 'none' -or $o.resize -or $o.format -ne 'original')) {
         Show-Warn '선택된 작업이 없어요.'; return
@@ -796,105 +1614,233 @@ function Show-SettingsDialog($base) {
     $sd = $script:SD
     $d = New-Dialog '작업 설정'
     $sd.Form = $d
-    $root = New-Flow 'TopDown'
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
     $onChange = { Update-SettingsState }
+    $root = New-Flow 'TopDown'
+    $sd.Root = $root
 
-    # UID 가리기
+    # ── UID 가리기 ──
+    $sd.MaskToggle = New-Toggle '사용' ([bool]$base['mask'])
+    $sd.MaskToggle.add_CheckedChanged($onChange)
+    $card = New-Card
+    $card.Controls.Add((New-Header 'UID 가리기' $sd.MaskToggle))
+    $body = New-Flow 'TopDown'
+    $sd.MaskBody = $body
     $row = New-Flow
-    $sd.MaskCheck = New-Check '사용' ([bool]$base['mask'])
-    $sd.MaskCheck.add_CheckedChanged($onChange)
-    $row.Controls.Add($sd.MaskCheck)
-    $sd.MaskRadios = [ordered]@{}
+    $row.Controls.Add((New-Label '방식'))
+    $sd.MaskChips = [ordered]@{}
     foreach ($k in $MaskModes.Keys) {
-        $rb = New-Radio $MaskModes[$k] ($base['mask_mode'] -eq $k)
-        $row.Controls.Add($rb); $sd.MaskRadios[$k] = $rb
+        $c = New-Chip $MaskModes[$k] ($base['mask_mode'] -eq $k) 'mask'
+        $c.add_CheckedChanged($onChange)
+        $row.Controls.Add($c); $sd.MaskChips[$k] = $c
     }
-    $root.Controls.Add((New-Group ' UID 가리기 ' $row))
+    $body.Controls.Add($row)
 
-    # 크롭
-    $col = New-Flow 'TopDown'
-    $r1 = New-Flow
-    $sd.CropRadios = [ordered]@{}
-    foreach ($k in $CropModes.Keys) {
-        $rb = New-Radio $CropModes[$k] ($base['crop'] -eq $k)
-        $rb.add_CheckedChanged($onChange)
-        $r1.Controls.Add($rb); $sd.CropRadios[$k] = $rb
+    $sd.BlurUi = New-SliderRow '블러 강도' $StrengthMin $StrengthMax ([int]$base['blur_radius']) ''
+    $sd.BlurRow = $sd.BlurUi.Row; $body.Controls.Add($sd.BlurRow)
+    $sd.PixUi = New-SliderRow '블록 크기' $StrengthMin $StrengthMax ([int]$base['pixel_block']) 'px'
+    $sd.PixRow = $sd.PixUi.Row; $body.Controls.Add($sd.PixRow)
+    # 기본값(링크)은 설정 파일 값이 아니라 고정 기본값으로 되돌리도록 지정
+    $sd.BlurUi.Row.Controls[$sd.BlurUi.Row.Controls.Count - 1].Tag.Def = [int]$Defaults['blur_radius']
+    $sd.PixUi.Row.Controls[$sd.PixUi.Row.Controls.Count - 1].Tag.Def = [int]$Defaults['pixel_block']
+
+    # 단색 색상
+    $sd.FillColor = [string]$base['fill_color']
+    $fr = New-Flow 'LeftToRight' $true
+    $fr.Controls.Add((New-Label '색상'))
+    $sd.FillChips = [ordered]@{}
+    $presets = @( @('검정', '#000000'), @('흰색', '#FFFFFF') )
+    foreach ($pr in $presets) {
+        $c = New-Chip $pr[0] ($sd.FillColor.ToUpper() -eq $pr[1]) 'fill'
+        $c.HasSwatch = $true
+        $c.Swatch = [System.Drawing.ColorTranslator]::FromHtml($pr[1])
+        $c.Tag = $pr[1]
+        $c.Fit()
+        $c.add_CheckedChanged({ param($s, $e) if ($s.Checked) { $script:SD.FillColor = [string]$s.Tag; Update-FillPreview } })
+        $fr.Controls.Add($c); $sd.FillChips[$pr[0]] = $c
     }
-    $col.Controls.Add($r1)
-    $r2 = New-Flow
+    $pick = New-Button '색 선택…' $false 70
+    $pick.add_Click({
+        $s = $script:SD
+        $cd = New-Object System.Windows.Forms.ColorDialog
+        $cd.FullOpen = $true
+        $cd.Color = [System.Drawing.ColorTranslator]::FromHtml([string]$s.FillColor)
+        if ($cd.ShowDialog($s.Form) -eq [System.Windows.Forms.DialogResult]::OK) {
+            foreach ($ch in $s.FillChips.Values) { $ch.Checked = $false }
+            $s.FillColor = ('#{0:X2}{1:X2}{2:X2}' -f $cd.Color.R, $cd.Color.G, $cd.Color.B)
+            Update-FillPreview
+        }
+        $cd.Dispose()
+    })
+    $sd.FillPreview = New-Object System.Windows.Forms.Label
+    $sd.FillPreview.AutoSize = $false; $sd.FillPreview.Size = New-Size (P 22) (P 22)
+    $sd.FillPreview.BorderStyle = 'FixedSingle'; $sd.FillPreview.Anchor = 'Left'
+    $sd.FillPreview.Margin = New-Pad (P 4) (P 4) (P 4) (P 4)
+    $sd.FillText = New-Label ''
+    $sd.FillText.Font = $script:FontSmall
+    $flink = New-LinkLabel '기본값으로'
+    $flink.add_Click({
+        $s = $script:SD
+        $s.FillColor = [string]$Defaults['fill_color']
+        foreach ($ch in $s.FillChips.Values) { $ch.Checked = ($ch.Tag -eq $s.FillColor) }
+        Update-FillPreview
+    })
+    $fr.Controls.Add($pick); $fr.Controls.Add($sd.FillPreview); $fr.Controls.Add($sd.FillText); $fr.Controls.Add($flink)
+    $sd.FillRow = $fr; $body.Controls.Add($fr)
+    Update-FillPreview
+
+    $body.Controls.Add((New-Hint "기본값은 4K 기준, 강도가 약하면 UID가 잘 안 가려질 수 있어요. (최소값 $StrengthMin)"))
+    $card.Controls.Add($body)
+    $root.Controls.Add($card)
+
+    # ── 크롭 ──
+    $card = New-Card
+    $card.Controls.Add((New-Header '크롭'))
+    $row = New-Flow
+    $sd.CropChips = [ordered]@{}
+    foreach ($k in $CropModes.Keys) {
+        $c = New-Chip $CropModes[$k] ($base['crop'] -eq $k) 'crop'
+        $c.add_CheckedChanged($onChange)
+        $row.Controls.Add($c); $sd.CropChips[$k] = $c
+    }
+    $card.Controls.Add($row)
+    $body = New-Flow 'TopDown'
+    $sd.CropBody = $body
+    $row = New-Flow
+    $row.Controls.Add((New-Label '단위'))
+    $sd.CUnitChips = [ordered]@{}
+    foreach ($k in $Units.Keys) {
+        $c = New-Chip $Units[$k] ($base['crop_unit'] -eq $k) 'cunit'
+        $c.add_CheckedChanged($onChange)
+        $row.Controls.Add($c); $sd.CUnitChips[$k] = $c
+    }
+    $body.Controls.Add($row)
+    $row = New-Flow
     $sd.BoxTexts = New-Object System.Collections.Generic.List[object]
     $names = @('왼쪽', '위', '오른쪽', '아래')
     for ($i = 0; $i -lt 4; $i++) {
-        $r2.Controls.Add((New-Label $names[$i]))
-        $tb = New-Object System.Windows.Forms.TextBox
-        $tb.Width = P 52; $tb.Anchor = 'Left'
-        $tb.Margin = New-Pad 0 (P 3) (P 10) (P 3)
-        $tb.Text = ([double]@($base['crop_box'])[$i]).ToString([System.Globalization.CultureInfo]::InvariantCulture)
-        $r2.Controls.Add($tb); $sd.BoxTexts.Add($tb)
+        $row.Controls.Add((New-Label $names[$i]))
+        $tb = New-Input 48 ([double]@($base['crop_margin'])[$i]).ToString('0.##', $inv)
+        $row.Controls.Add($tb); $sd.BoxTexts.Add($tb)
     }
-    $col.Controls.Add($r2)
-    $col.Controls.Add((New-Hint '직접 지정은 0~1 비율 (예: 왼쪽 0.25, 오른쪽 0.75 → 가운데 절반)'))
-    $col.Controls.Add((New-Hint '띠 제거는 시네마틱으로 판별된 이미지에만 적용돼요'))
-    $root.Controls.Add((New-Group ' 크롭 ' $col))
+    $sd.CropSuffix = New-Label '%'
+    $sd.CropSuffix.Margin = New-Pad (P 3) (P 5) (P 6) (P 5)
+    $row.Controls.Add($sd.CropSuffix)
+    $body.Controls.Add($row)
+    $card.Controls.Add($body)
+    $card.Controls.Add((New-Hint '각 가장자리에서 잘라낼 양을 입력해요.'))
+    $card.Controls.Add((New-Hint '해상도가 다른 여러 이미지를 처리시 픽셀 단위는 범위가 달라지므로 비율을 권장해요.' $true))
+    $card.Controls.Add((New-Hint '띠 제거는 시네마틱으로 판별된 이미지에만 적용돼요.'))
+    $root.Controls.Add($card)
 
-    # 리사이즈
-    $row = New-Flow
-    $sd.ResizeCheck = New-Check '사용    가로' ([bool]$base['resize'])
-    $sd.ResizeCheck.Margin = New-Pad (P 3) (P 4) (P 4) (P 4)
-    $sd.ResizeCheck.add_CheckedChanged($onChange)
-    $sd.Combo = New-Object System.Windows.Forms.ComboBox
-    $sd.Combo.DropDownStyle = 'DropDown'; $sd.Combo.Width = P 80; $sd.Combo.Anchor = 'Left'
-    foreach ($v in @('3840', '2560', '1920', '1600', '1280')) { [void]$sd.Combo.Items.Add($v) }
-    $sd.Combo.Text = [string]$base['resize_width']
-    $row.Controls.Add($sd.ResizeCheck); $row.Controls.Add($sd.Combo)
-    $row.Controls.Add((New-Label 'px (비율 유지, 확대는 안 함)'))
-    $root.Controls.Add((New-Group ' 리사이즈 ' $row))
+    # ── 리사이즈 ──
+    $sd.ResizeToggle = New-Toggle '사용' ([bool]$base['resize'])
+    $sd.ResizeToggle.add_CheckedChanged($onChange)
+    $card = New-Card
+    $card.Controls.Add((New-Header '리사이즈' $sd.ResizeToggle))
+    $body = New-Flow
+    $sd.ResizeBody = $body
+    $body.Controls.Add((New-Label '단위'))
+    $sd.RUnitChips = [ordered]@{}
+    foreach ($k in $Units.Keys) {
+        $c = New-Chip $Units[$k] ($base['resize_unit'] -eq $k) 'runit'
+        $c.add_CheckedChanged($onChange)
+        $body.Controls.Add($c); $sd.RUnitChips[$k] = $c
+    }
+    $sd.ResizeVals = @{ percent = ([double]$base['resize_percent']).ToString('0.##', $inv); px = [string]$base['resize_width'] }
+    $sd.ResizeUnitShown = [string]$base['resize_unit']
+    $sd.RCombo = New-Object System.Windows.Forms.ComboBox
+    $sd.RCombo.DropDownStyle = 'DropDown'; $sd.RCombo.Width = P 80; $sd.RCombo.Anchor = 'Left'
+    $sd.RCombo.Margin = New-Pad (P 8) (P 3) (P 2) (P 3)
+    $initItems = if ($sd.ResizeUnitShown -eq 'px') { @('3840', '2560', '1920', '1600', '1280') } else { @('75', '50', '25') }
+    foreach ($v in $initItems) { [void]$sd.RCombo.Items.Add($v) }
+    $sd.RCombo.Text = [string]$sd.ResizeVals[$sd.ResizeUnitShown]
+    $sd.RSuffix = New-Label '%'
+    $sd.RSuffix.Margin = New-Pad (P 3) (P 5) (P 6) (P 5)
+    $body.Controls.Add($sd.RCombo); $body.Controls.Add($sd.RSuffix)
+    $card.Controls.Add($body)
+    $card.Controls.Add((New-Hint '해상도가 다른 여러 이미지를 처리시 픽셀 단위는 범위가 달라지므로 비율을 권장해요.' $true))
+    $card.Controls.Add((New-Hint '확대는 하지 않아요. 비율은 1~100%, 가로 px는 원본 가로 이하만 적용돼요.'))
+    $root.Controls.Add($card)
 
-    # 저장 포맷
+    # ── 저장 포맷 ──
+    $card = New-Card
+    $card.Controls.Add((New-Header '저장 포맷'))
     $row = New-Flow
-    $sd.FmtRadios = [ordered]@{}
+    $sd.FmtChips = [ordered]@{}
     foreach ($k in $Formats.Keys) {
-        $rb = New-Radio $Formats[$k] ($base['format'] -eq $k)
-        $row.Controls.Add($rb); $sd.FmtRadios[$k] = $rb
+        $c = New-Chip $Formats[$k] ($base['format'] -eq $k) 'fmt'
+        $c.add_CheckedChanged($onChange)
+        $row.Controls.Add($c); $sd.FmtChips[$k] = $c
     }
-    $root.Controls.Add((New-Group ' 저장 포맷 ' $row))
+    $card.Controls.Add($row)
+    $jb = New-Flow 'TopDown'
+    $sd.JpgBody = $jb
+    $sd.JpgUi = New-SliderRow 'JPG 품질' 1 100 ([int]$base['jpg_quality']) '%'
+    $sd.JpgUi.Row.Controls[$sd.JpgUi.Row.Controls.Count - 1].Tag.Def = [int]$Defaults['jpg_quality']
+    $jb.Controls.Add($sd.JpgUi.Row)
+    $jb.Controls.Add((New-Hint '1~100%, 높을수록 화질이 좋고 용량이 커요.'))
+    $card.Controls.Add($jb)
+    $root.Controls.Add($card)
 
-    # 저장 위치
-    $col = New-Flow 'TopDown'
-    $sd.OutCheck = New-Check "직접 지정  (해제 시 원본 폴더 안 '$OutDirName' 폴더에 저장)" ([bool]$base['out_custom'])
-    $sd.OutCheck.add_CheckedChanged($onChange)
-    $col.Controls.Add($sd.OutCheck)
+    # ── 저장 위치 ──
+    $sd.OutToggle = New-Toggle '직접 지정' ([bool]$base['out_custom'])
+    $sd.OutToggle.add_CheckedChanged($onChange)
+    $card = New-Card
+    $card.Controls.Add((New-Header '저장 위치' $sd.OutToggle))
+    $card.Controls.Add((New-Hint "기본값은 원본 폴더 안 '$OutDirName'에 저장되고, '직접 지정' 선택시 변경 가능해요."))
     $row = New-Flow
-    $sd.OutBox = New-Object System.Windows.Forms.TextBox
-    $sd.OutBox.Width = P 380; $sd.OutBox.Anchor = 'Left'
-    $sd.OutBox.Margin = New-Pad (P 3) (P 3) (P 6) (P 3)
-    $sd.OutBox.Text = [string]$base['out_dir']
+    $row.Margin = New-Pad 0 (P 6) 0 0
     $browse = New-Button '찾아보기…'
+    $browse.Margin = New-Pad 0 (P 3) 0 (P 3)
+    $sd.OutBox = New-Input 100 ([string]$base['out_dir'])
+    $sd.OutBox.Width = (Get-InnerW) - $browse.Width - (P 8) - (P 2)
     $browse.add_Click({
         $s = $script:SD
-        $fb = New-Object System.Windows.Forms.FolderBrowserDialog
-        $fb.Description = '결과를 저장할 폴더를 선택하세요'
         $cur = $s.OutBox.Text.Trim()
-        if ($cur -and [System.IO.Directory]::Exists($cur)) { $fb.SelectedPath = $cur }
-        if ($fb.ShowDialog($s.Form) -eq [System.Windows.Forms.DialogResult]::OK) {
-            $s.OutBox.Text = $fb.SelectedPath
-            $s.OutCheck.Checked = $true
+        $picked = $null
+        try { $picked = [FolderPicker]::Pick($s.Form.Handle, '결과를 저장할 폴더를 선택하세요', $cur) }
+        catch {
+            $fb = New-Object System.Windows.Forms.FolderBrowserDialog
+            $fb.Description = '결과를 저장할 폴더를 선택하세요'
+            if ($cur -and [System.IO.Directory]::Exists($cur)) { $fb.SelectedPath = $cur }
+            if ($fb.ShowDialog($s.Form) -eq [System.Windows.Forms.DialogResult]::OK) { $picked = $fb.SelectedPath }
+            $fb.Dispose()
         }
-        $fb.Dispose()
+        if ($picked) { $s.OutBox.Text = $picked; $s.OutToggle.Checked = $true }
     })
     $row.Controls.Add($sd.OutBox); $row.Controls.Add($browse)
-    $col.Controls.Add($row)
-    $root.Controls.Add((New-Group ' 저장 위치 ' $col))
+    $card.Controls.Add($row)
+    $sd.KeepToggle = New-Toggle '원본 폴더 구조 유지' ([bool]$base['keep_structure'])
+    $keepRow = New-Object System.Windows.Forms.Panel
+    $keepRow.Size = New-Size (Get-InnerW) (P 30)
+    $keepRow.Margin = New-Pad 0 (P 8) 0 0
+    $sd.KeepToggle.Dock = 'Right'
+    $keepRow.Controls.Add($sd.KeepToggle)
+    $card.Controls.Add($keepRow)
+    $card.Controls.Add((New-Hint '이 옵션을 활성화하면 폴더 드롭시 원본 폴더 구조를 그대로 유지하여 저장해요.'))
+    $root.Controls.Add($card)
 
-    # 버튼
-    $btns = New-Flow
-    $ok = New-Button '이 설정으로 실행'
-    $ok.add_Click({ Confirm-Settings })
+    # ── 아래쪽 버튼 (오른쪽 정렬) ──
+    $footer = New-Object System.Windows.Forms.FlowLayoutPanel
+    $footer.Dock = 'Bottom'; $footer.Height = P 56
+    $footer.FlowDirection = 'RightToLeft'; $footer.WrapContents = $false
+    $footer.Padding = New-Pad (P 16) (P 10) (P 16) (P 10)
+    $sd.Footer = $footer
     $cancel = New-Button '취소'; $cancel.DialogResult = 'Cancel'
-    $btns.Controls.Add($ok); $btns.Controls.Add($cancel)
-    $root.Controls.Add($btns)
+    $ok = New-Button '이 설정으로 실행' $true
+    $ok.add_Click({ Confirm-Settings })
+    $footer.Controls.Add($cancel); $footer.Controls.Add($ok)
 
-    $d.Controls.Add($root)
+    $scroll = New-Object System.Windows.Forms.Panel
+    $scroll.Dock = 'Fill'; $scroll.AutoScroll = $true
+    $scroll.AutoScrollMargin = New-Size (P 16) (P 8)
+    $root.Location = New-Object System.Drawing.Point -ArgumentList (P 16), (P 8)
+    $scroll.Controls.Add($root)
+
+    $d.Controls.Add($scroll)
+    $d.Controls.Add($footer)
+    $d.AcceptButton = $ok
     $d.CancelButton = $cancel
     Update-SettingsState
     $r = $d.ShowDialog($script:Main)
@@ -915,15 +1861,16 @@ function Start-Work($paths) {
         $o = Show-SettingsDialog (Copy-Opts $Defaults)
     }
     if ($null -eq $o) { return }
-    Save-Opts $o
 
     $p0 = [string]$paths[0]
     if (Use-CustomOut $o) { $script:LastOut = ([string]$o['out_dir']).Trim() }
     elseif ([System.IO.Directory]::Exists($p0)) { $script:LastOut = [System.IO.Path]::Combine($p0, $OutDirName) }
     else { $script:LastOut = [System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($p0), $OutDirName) }
+    $o['last_out'] = [string]$script:LastOut   # 다음에 실행해도 '최근 결과 폴더'를 열 수 있게 함
+    Save-Opts $o
 
     $script:Zone.Text = '처리 중…'
-    $script:Zone.BackColor = $script:ColBusy
+    $script:Zone.State = 2
     Write-Log ('설정: ' + ((Get-Desc $o) -join ' · '))
     Invoke-Batch $paths $o
 }
@@ -935,75 +1882,95 @@ function Start-Gui {
     $gfx = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero)
     $script:Scale = $gfx.DpiX / 96.0
     $gfx.Dispose()
-    $script:Font    = New-Object System.Drawing.Font -ArgumentList 'Malgun Gothic', 9.5
-    $script:ColIdle  = [System.Drawing.Color]::FromArgb(43, 47, 54)
-    $script:ColHover = [System.Drawing.Color]::FromArgb(54, 80, 110)
-    $script:ColBusy  = [System.Drawing.Color]::FromArgb(61, 74, 92)
-    $script:IdleText = '여기에 이미지 / 폴더를 드롭하세요'
+    try {
+        Add-Type -TypeDefinition $UiCode -ReferencedAssemblies System.Windows.Forms, System.Drawing -Language CSharp
+    } catch {
+        Show-Error ("화면 모듈을 준비하지 못했습니다.`r`n`r`n" + $_.Exception.Message) -Fatal
+    }
+    $script:Font      = New-Object System.Drawing.Font -ArgumentList 'Malgun Gothic', 9.5
+    $script:FontSmall = New-Object System.Drawing.Font -ArgumentList 'Malgun Gothic', 9
+    $script:FontTitle = New-Object System.Drawing.Font -ArgumentList 'Malgun Gothic', 10.5, ([System.Drawing.FontStyle]::Bold)
+    $script:ColBg     = New-Rgb 243 243 243
+    $script:IdleText  = '여기에 이미지 / 폴더를 드롭하세요'
     $script:Busy = $false
     $script:LastOut = $null
+    $saved = Load-Opts
+    if ($saved -and ([string]$saved['last_out']).Trim()) { $script:LastOut = ([string]$saved['last_out']).Trim() }
 
     $f = New-Object System.Windows.Forms.Form
-    $f.Text = '명조 이미지 간편수정'
+    $f.Text = '명조 이미지 간편 수정 v' + $AppVersion
     $f.Font = $script:Font
-    $f.ClientSize  = New-Object System.Drawing.Size -ArgumentList (P 560), (P 460)
-    $f.MinimumSize = New-Object System.Drawing.Size -ArgumentList (P 380), (P 320)
+    $f.BackColor = $script:ColBg
+    $f.ClientSize  = New-Size (P 580) (P 520)
+    $f.MinimumSize = New-Size (P 420) (P 400)
     $f.StartPosition = 'CenterScreen'
     $f.TopMost = $true
-    $f.Padding = New-Pad (P 10)
+    $f.Padding = New-Pad (P 14)
     $script:Main = $f
 
-    $zone = New-Object System.Windows.Forms.Label
-    $zone.Text = $script:IdleText
-    $zone.TextAlign = 'MiddleCenter'
-    $zone.Dock = 'Fill'
-    $zone.Font = New-Object System.Drawing.Font -ArgumentList 'Malgun Gothic', 14
-    $zone.BackColor = $script:ColIdle
-    $zone.ForeColor = [System.Drawing.Color]::FromArgb(230, 230, 230)
-    $zone.BorderStyle = 'FixedSingle'
-    $zone.AllowDrop = $true
-    $script:Zone = $zone
-
-    $spacer = New-Object System.Windows.Forms.Panel
-    $spacer.Dock = 'Bottom'; $spacer.Height = P 10
-
-    $log = New-Object System.Windows.Forms.TextBox
-    $log.Multiline = $true; $log.ReadOnly = $true; $log.ScrollBars = 'Vertical'; $log.WordWrap = $false
-    $log.Dock = 'Bottom'; $log.Height = P 160
-    $log.Font = New-Object System.Drawing.Font -ArgumentList 'Malgun Gothic', 9
-    $log.BackColor = [System.Drawing.SystemColors]::Window
-    $script:LogBox = $log
-
-    $top = New-Object System.Windows.Forms.Panel
-    $top.Dock = 'Top'; $top.Height = P 40
-    $top.Padding = New-Pad 0 0 0 (P 8)
-    $chk = New-Object System.Windows.Forms.CheckBox
-    $chk.Text = '항상 위'; $chk.Checked = $true; $chk.AutoSize = $true; $chk.Dock = 'Left'
+    # 위쪽 막대: 항상 위 / 결과 폴더 열기
+    $topBar = New-Object CardPanel
+    $topBar.S = $script:Scale
+    $topBar.Dock = 'Top'; $topBar.Height = P 54
+    $topBar.Padding = New-Pad (P 14) (P 8) (P 10) (P 8)
+    $chk = New-Toggle '항상 위' $true
+    $chk.Dock = 'Left'
     $chk.add_CheckedChanged({ $script:Main.TopMost = $script:TopChk.Checked })
     $script:TopChk = $chk
-    $btn = New-Object System.Windows.Forms.Button
-    $btn.Text = '결과 폴더 열기'; $btn.AutoSize = $true; $btn.Dock = 'Right'
+    $btn = New-Button '최근 결과 폴더'
+    $btn.Margin = New-Pad 0
+    $btn.Dock = 'Right'
     $btn.add_Click({
         $p = $script:LastOut
         if ($p -and [System.IO.Directory]::Exists($p)) { [void][System.Diagnostics.Process]::Start('explorer.exe', '"' + $p + '"') }
-        else { Write-Log '아직 처리한 결과 폴더가 없습니다.' }
+        else { Write-Log '열 수 있는 최근 결과 폴더가 없습니다.' }
     })
-    $top.Controls.Add($chk); $top.Controls.Add($btn)
+    $topBar.Controls.Add($chk); $topBar.Controls.Add($btn)
+
+    # 드롭 영역
+    $zone = New-Object DropZone
+    $zone.S = $script:Scale
+    $zone.Text = $script:IdleText
+    $zone.Dock = 'Fill'
+    $zone.Font = New-Object System.Drawing.Font -ArgumentList 'Malgun Gothic', 14
+    $script:Zone = $zone
+
+    # 진행 로그 카드
+    $logCard = New-Object CardPanel
+    $logCard.S = $script:Scale
+    $logCard.Dock = 'Bottom'; $logCard.Height = P 190
+    $logCard.Padding = New-Pad (P 16) (P 12) (P 12) (P 12)
+    $log = New-Object System.Windows.Forms.TextBox
+    $log.Multiline = $true; $log.ReadOnly = $true; $log.ScrollBars = 'Vertical'; $log.WordWrap = $false
+    $log.BorderStyle = 'None'
+    $log.Dock = 'Fill'
+    $log.Font = $script:FontSmall
+    $log.BackColor = [System.Drawing.Color]::White
+    $script:LogBox = $log
+    $logTitle = New-Object System.Windows.Forms.Label
+    $logTitle.Text = '진행 로그'; $logTitle.AutoSize = $false
+    $logTitle.Dock = 'Top'; $logTitle.Height = P 26
+    $logTitle.TextAlign = 'MiddleLeft'
+    $logTitle.Font = $script:FontTitle
+    $logCard.Controls.Add($log); $logCard.Controls.Add($logTitle)
+
+    $spTop = New-Object System.Windows.Forms.Panel;    $spTop.Dock = 'Top';    $spTop.Height = P 10
+    $spBot = New-Object System.Windows.Forms.Panel;    $spBot.Dock = 'Bottom'; $spBot.Height = P 10
 
     # 도킹은 나중에 추가한 컨트롤부터 적용됨
-    $f.Controls.Add($zone); $f.Controls.Add($spacer); $f.Controls.Add($log); $f.Controls.Add($top)
+    $f.Controls.Add($zone); $f.Controls.Add($spBot); $f.Controls.Add($logCard); $f.Controls.Add($spTop); $f.Controls.Add($topBar)
 
     $zone.add_DragEnter({
         param($s, $e)
         if (-not $script:Busy -and $e.Data.GetDataPresent([System.Windows.Forms.DataFormats]::FileDrop)) {
             $e.Effect = [System.Windows.Forms.DragDropEffects]::Copy
-            $script:Zone.BackColor = $script:ColHover
+            $script:Zone.State = 1
         } else { $e.Effect = [System.Windows.Forms.DragDropEffects]::None }
     })
-    $zone.add_DragLeave({ if (-not $script:Busy) { $script:Zone.BackColor = $script:ColIdle } })
+    $zone.add_DragLeave({ if (-not $script:Busy) { $script:Zone.State = 0 } })
     $zone.add_DragDrop({
         param($s, $e)
-        $script:Zone.BackColor = $script:ColIdle
+        $script:Zone.State = 0
         if ($script:Busy) { Write-Log '처리 중입니다. 끝난 뒤 다시 드롭해 주세요.'; return }
         $script:Pending = @($e.Data.GetData([System.Windows.Forms.DataFormats]::FileDrop))
         if ($script:Pending.Count -eq 0) { return }
@@ -1020,7 +1987,7 @@ function Start-Gui {
         finally {
             $script:Busy = $false
             $script:Zone.Text = $script:IdleText
-            $script:Zone.BackColor = $script:ColIdle
+            $script:Zone.State = 0
         }
     })
     $script:DropTimer = $t
