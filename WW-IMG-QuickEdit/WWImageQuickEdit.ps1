@@ -22,6 +22,7 @@ $UidDesktopRight  = @(0, 423);    $UidDesktopBottom = @(0, 54)    # PC(16:9): �
 $UidMobileRight   = @(215, 570);  $UidMobileBottom  = @(0, 75)    # 휴대폰(16:9 외 비율)
 $UidCineRight     = @(47, 327);   $UidCineBottom    = @(-19, 54)  # 시네마틱: 검은 띠 제외 화면 아래 기준
 $DesktopRatio     = @(1.70, 1.85) # 이 범위의 가로/세로 비율이면 PC 레이아웃, 아니면 휴대폰 레이아웃
+$UltraRatioMin    = 2.35          # 이 비율보다 가로로 길면 울트라와이드(21:9·32:9): 시네마틱과 같은 위치 기준(검은 띠 제외 화면 아래·오른쪽 끝)
 
 # 시네마틱 판별: 위/아래 가장자리 평균 밝기가 이 값 이하면 검은 띠로 간주
 $LetterboxBand      = 0.04
@@ -50,6 +51,7 @@ $Defaults = [ordered]@{
     pixel_block    = 14            # 모자이크 블록 크기 (4K 기준)
     fill_color     = '#000000'     # 단색 덮기 색상
     crop           = 'none'        # none | letterbox | custom
+    crop_pillar    = $false        # 레터박스 제거 시 울트라와이드 좌우 검은 띠도 제거
     crop_unit      = 'percent'     # percent | px
     crop_margin    = @(0.0, 0.0, 0.0, 0.0)   # 각 가장자리에서 잘라낼 양: 왼쪽, 위, 오른쪽, 아래
     resize         = $false
@@ -103,11 +105,13 @@ public class UidOpts
     public double[] CineBottom = new double[] { -19, 54 };
     public double DeskRatioMin = 1.70;
     public double DeskRatioMax = 1.85;
+    public double UltraRatioMin = 2.35;  // 이 비율보다 가로로 길면 울트라와이드(21:9·32:9) 화면으로 판별
     public int PixelBlock = 14;          // 4K 기준
     public double BlurRadius = 14;       // 4K 기준
     public bool ScaleStrength = true;    // 강도를 해상도에 맞춰 조정
     public int FillR = 0, FillG = 0, FillB = 0;
     public string Crop = "none";
+    public bool CropPillar = false;      // letterbox 크롭 시 좌우 검은 띠도 제거 (울트라와이드)
     public string CropUnit = "percent";  // percent | px
     public double[] CropMargin = new double[] { 0, 0, 0, 0 };   // 왼쪽, 위, 오른쪽, 아래에서 잘라낼 양
     public bool Resize = false;
@@ -139,9 +143,11 @@ public static class UidImg
             double[] rows = RowMeans(buf, stride, bmp.Width, bmp.Height);
             bool cine = IsCinematic(rows, o);
             int[] lb = cine ? LetterboxRows(rows, bmp.Height, o) : null;
+            bool wide = !cine && (double)bmp.Width / bmp.Height > o.UltraRatioMin;   // 위아래 띠 없는 울트라와이드 화면
+            int[] cb = (cine || wide) ? PillarCols(buf, stride, bmp.Width, bmp.Height, lb, o) : null;   // 좌우 검은 띠를 뺀 화면 범위
             string layout;
             double scale;
-            Rectangle r = UidBox(bmp.Width, bmp.Height, cine, lb, o, out layout, out scale);
+            Rectangle r = UidBox(bmp.Width, bmp.Height, cine || wide, wide, lb, cb, o, out layout, out scale);
             notes.Add(layout);
 
             // 1) UID 가리기
@@ -173,10 +179,14 @@ public static class UidImg
             // 2) 크롭
             if (o.Crop == "letterbox")
             {
-                if (lb != null)
+                bool usePillar = o.CropPillar && cb != null;
+                if (lb != null || usePillar)
                 {
-                    bmp = Swap(bmp, bmp.Clone(new Rectangle(0, lb[0], bmp.Width, lb[1] - lb[0]), PixelFormat.Format32bppArgb));
-                    notes.Add("lb");
+                    int cy0 = lb != null ? lb[0] : 0, cy1 = lb != null ? lb[1] : bmp.Height;
+                    int cx0 = usePillar ? cb[0] : 0, cx1 = usePillar ? cb[1] : bmp.Width;
+                    bmp = Swap(bmp, bmp.Clone(new Rectangle(cx0, cy0, cx1 - cx0, cy1 - cy0), PixelFormat.Format32bppArgb));
+                    if (lb != null) notes.Add("lb");
+                    if (usePillar) notes.Add("pillar");
                 }
             }
             else if (o.Crop == "custom")
@@ -221,15 +231,17 @@ public static class UidImg
     }
 
     // UID 영역 계산: 크기 배율 = min(가로/3840, 세로/2160), 오른쪽·아래 가장자리 기준
-    static Rectangle UidBox(int w, int h, bool cine, int[] lb, UidOpts o, out string layout, out double scale)
+    static Rectangle UidBox(int w, int h, bool cine, bool wide, int[] lb, int[] cb, UidOpts o, out string layout, out double scale)
     {
         double s, edge;
+        double right = w;   // 오른쪽 기준선 (시네마틱에서 좌우 검은 띠가 있으면 화면 영역의 오른쪽 끝)
         double[] rr, bb;
         if (cine)
         {
             int top = lb != null ? lb[0] : 0, bottom = lb != null ? lb[1] : h;
             s = Math.Min(w / 3840.0, (bottom - top) / 1620.0);
-            rr = o.CineRight; bb = o.CineBottom; edge = bottom; layout = "cine";
+            rr = o.CineRight; bb = o.CineBottom; edge = bottom; layout = wide ? "ultra" : "cine";
+            if (cb != null) right = cb[1];
         }
         else
         {
@@ -241,9 +253,9 @@ public static class UidImg
             edge = h; layout = mobile ? "mobile" : "normal";
         }
         scale = s;
-        int l = Clamp((int)(w - rr[1] * s), 0, w);
+        int l = Clamp((int)(right - rr[1] * s), 0, w);
         int t = Clamp((int)(edge - bb[1] * s), 0, h);
-        int r = Clamp((int)Math.Ceiling(w - rr[0] * s), 0, w);
+        int r = Clamp((int)Math.Ceiling(right - rr[0] * s), 0, w);
         int b = Clamp((int)Math.Ceiling(edge - bb[0] * s), 0, h);
         return new Rectangle(l, t, Math.Max(0, r - l), Math.Max(0, b - t));
     }
@@ -321,6 +333,27 @@ public static class UidImg
             m[y] = s / 1000.0 / w;
         }
         return m;
+    }
+
+    // 시네마틱 화면 높이 안에서 좌우 검은 띠를 찾아 실제 화면의 [왼쪽, 오른쪽) 열을 반환 (띠가 없거나 너무 얇으면 null)
+    static int[] PillarCols(byte[] buf, int stride, int w, int h, int[] lb, UidOpts o)
+    {
+        int y0 = lb != null ? lb[0] : 0, y1 = lb != null ? lb[1] : h;
+        if (y1 - y0 < 1) return null;
+        long[] sum = new long[w];
+        for (int y = y0; y < y1; y++)
+        {
+            int k = y * stride;
+            for (int x = 0; x < w; x++, k += 4)
+                sum[x] += buf[k + 2] * 299 + buf[k + 1] * 587 + buf[k] * 114;
+        }
+        double div = 1000.0 * (y1 - y0);
+        int left = -1, right = -1;
+        for (int x = 0; x < w; x++) if (sum[x] / div > o.LbMaxBright) { left = x; break; }
+        if (left < 0) return null;
+        for (int x = w - 1; x >= 0; x--) if (sum[x] / div > o.LbMaxBright) { right = x + 1; break; }
+        if (left < w * o.LbMinRatio && (w - right) < w * o.LbMinRatio) return null;
+        return new int[] { left, right };
     }
 
     static bool IsCinematic(double[] rows, UidOpts o)
@@ -1026,6 +1059,7 @@ function Load-Opts {
         $o['out_custom']     = [bool]$o['out_custom']
         $o['out_dir']        = [string]$o['out_dir']
         $o['keep_structure'] = [bool]$o['keep_structure']
+        $o['crop_pillar']    = [bool]$o['crop_pillar']
         $o['last_out']       = [string]$o['last_out']
         $o['blur_radius']    = [int](Get-Num $o['blur_radius'] 14 $StrengthMin $StrengthMax)
         $o['pixel_block']    = [int](Get-Num $o['pixel_block'] 14 $StrengthMin $StrengthMax)
@@ -1067,7 +1101,7 @@ function Get-Desc($o) {
     if ($o['crop'] -eq 'custom') {
         $u = if ($o['crop_unit'] -eq 'px') { ' px' } else { '%' }
         $l.Add('크롭: 자를 양(좌·상·우·하) ' + ((@($o['crop_margin']) | ForEach-Object { '{0:g}' -f $_ }) -join ', ') + $u)
-    } else { $l.Add('크롭: ' + $CropModes[[string]$o['crop']]) }
+    } else { $l.Add('크롭: ' + $CropModes[[string]$o['crop']] + $(if (($o['crop'] -eq 'letterbox') -and $o['crop_pillar']) { ' (좌우 포함)' } else { '' })) }
     if ($o['resize']) {
         if ($o['resize_unit'] -eq 'px') { $l.Add('리사이즈: 가로 ' + $o['resize_width'] + 'px') }
         else { $l.Add('리사이즈: ' + ('{0:g}' -f $o['resize_percent']) + '%') }
@@ -1087,7 +1121,10 @@ function Write-Log([string]$m) {
     if ($script:LogBox) {
         $script:LogBox.AppendText($m + "`r`n")
         [System.Windows.Forms.Application]::DoEvents()
-    } else { Write-Host $m }
+    } else {
+        Write-Host $m
+        if ($script:DropLog) { $script:DropLog.Add($m.Trim()) }
+    }
 }
 
 function Test-Under([string]$path, [string]$dir) {
@@ -1169,6 +1206,7 @@ function New-CsOpts($o) {
     $c.CineBottom   = [double[]]$UidCineBottom
     $c.DeskRatioMin = [double]$DesktopRatio[0]
     $c.DeskRatioMax = [double]$DesktopRatio[1]
+    $c.UltraRatioMin = [double]$UltraRatioMin
     $c.PixelBlock   = [int]$o['pixel_block']
     $c.BlurRadius   = [double]$o['blur_radius']
     $c.ScaleStrength = [bool]$ScaleStrength
@@ -1177,6 +1215,7 @@ function New-CsOpts($o) {
     $c.FillG = [Convert]::ToInt32($hex.Substring(3, 2), 16)
     $c.FillB = [Convert]::ToInt32($hex.Substring(5, 2), 16)
     $c.Crop         = [string]$o['crop']
+    $c.CropPillar   = [bool]$o['crop_pillar']
     $c.CropUnit     = [string]$o['crop_unit']
     $c.CropMargin   = [double[]]@($o['crop_margin'])
     $c.Resize       = [bool]$o['resize']
@@ -1195,6 +1234,8 @@ function Convert-Notes([string]$tokens) {
     $out = foreach ($t in ($tokens -split ',')) {
         switch -Regex ($t) {
             '^cine$'   { '시네마틱' }
+            '^ultra$'  { '울트라와이드' }
+            '^pillar$' { '좌우 띠 제거' }
             '^normal$' { '일반' }
             '^mobile$' { '휴대폰' }
             '^lb$'     { '띠 제거' }
@@ -1504,6 +1545,7 @@ function Update-SettingsState {
     # 크롭
     $custom = ((Get-Checked $sd.CropChips 'none') -eq 'custom')
     $sd.CropBody.Enabled = $custom
+    $sd.PillarBody.Visible = ((Get-Checked $sd.CropChips 'none') -eq 'letterbox')
     $sd.CropSuffix.Text = if ((Get-Checked $sd.CUnitChips 'percent') -eq 'px') { 'px' } else { '%' }
 
     # 리사이즈
@@ -1590,6 +1632,7 @@ function Confirm-Settings {
         pixel_block    = [int]$sd.PixUi.Num.Value
         fill_color     = [string]$sd.FillColor
         crop           = $crop
+        crop_pillar    = [bool]$sd.PillarToggle.Checked
         crop_unit      = $cunit
         crop_margin    = [double[]]$m.ToArray()
         resize         = $sd.ResizeToggle.Checked
@@ -1704,6 +1747,15 @@ function Show-SettingsDialog($base) {
         $row.Controls.Add($c); $sd.CropChips[$k] = $c
     }
     $card.Controls.Add($row)
+    $sd.PillarToggle = New-Toggle '울트라와이드 좌우 레터박스 제거' ([bool]$base['crop_pillar'])
+    $pillarRow = New-Object System.Windows.Forms.Panel
+    $pillarRow.Size = New-Size (Get-InnerW) (P 30)
+    $pillarRow.Margin = New-Pad 0 (P 4) 0 0
+    $sd.PillarToggle.Dock = 'Right'
+    $pillarRow.Controls.Add($sd.PillarToggle)
+    $sd.PillarBody = New-Flow 'TopDown'
+    $sd.PillarBody.Controls.Add($pillarRow)
+    $card.Controls.Add($sd.PillarBody)
     $body = New-Flow 'TopDown'
     $sd.CropBody = $body
     $row = New-Flow
@@ -2005,8 +2057,15 @@ try {
         try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
         $o = Load-Opts
         if ($null -eq $o) { $o = Copy-Opts $Defaults }
+        $script:DropLog = New-Object System.Collections.Generic.List[string]
         Write-Log ('설정: ' + ((Get-Desc $o) -join ' · '))
         Invoke-Batch $DropArgs $o
+        # 콘솔 창 없이 실행되므로 결과를 안내창으로 보여줌
+        $lines = New-Object System.Collections.Generic.List[string]
+        foreach ($ln in $script:DropLog) { if ($ln -like '설정:*' -or $ln -like '완료:*' -or $ln -like '*실패*' -or $ln -like '처리할 이미지가 없습니다*') { $lines.Add($ln) } }
+        $icon = if ($lines | Where-Object { $_ -like '*실패*' -or $_ -like '처리할 이미지가 없습니다*' }) { 'Warning' } else { 'Information' }
+        if ($lines.Count -gt 12) { $lines = $lines.GetRange(0, 12); $lines.Add('...') }
+        [void][System.Windows.Forms.MessageBox]::Show(($lines -join "`r`n"), ('명조 이미지 간편 수정 v' + $AppVersion), 'OK', $icon)
     } else {
         Start-Gui
     }
