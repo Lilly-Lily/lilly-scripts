@@ -18,7 +18,7 @@ $AppVersion = '1.1'   # 창 제목에 표시되는 버전
 # ===================== 고정 설정 =====================
 # UID 영역: 4K(3840x2160) 기준 px 단위, @(가까운 쪽, 먼 쪽) 거리
 #   실제 크기 배율 = min(가로/3840, 세로/2160) → 해상도·화면 비율이 달라도 같은 위치
-$UidDesktopRight  = @(70, 423);   $UidDesktopBottom = @(0, 54)    # PC(16:9): 오른쪽·아래 가장자리 기준
+$UidDesktopRight  = @(0, 423);    $UidDesktopBottom = @(0, 54)    # PC(16:9): 오른쪽·아래 가장자리 기준
 $UidMobileRight   = @(215, 570);  $UidMobileBottom  = @(0, 75)    # 휴대폰(16:9 외 비율)
 $UidCineRight     = @(47, 327);   $UidCineBottom    = @(-19, 54)  # 시네마틱: 검은 띠 제외 화면 아래 기준
 $DesktopRatio     = @(1.70, 1.85) # 이 범위의 가로/세로 비율이면 PC 레이아웃, 아니면 휴대폰 레이아웃
@@ -95,7 +95,7 @@ public class UidOpts
     public bool Mask = true;
     public string MaskMode = "blur";
     // UID 영역: 4K(3840x2160) 기준 px, {가까운 쪽, 먼 쪽} 거리
-    public double[] DeskRight  = new double[] { 70, 423 };
+    public double[] DeskRight  = new double[] { 0, 423 };
     public double[] DeskBottom = new double[] { 0, 54 };
     public double[] MobRight   = new double[] { 215, 570 };
     public double[] MobBottom  = new double[] { 0, 75 };
