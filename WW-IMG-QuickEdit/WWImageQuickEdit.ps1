@@ -66,7 +66,7 @@ $Defaults = [ordered]@{
 # =====================================================
 
 $MaskModes = [ordered]@{ blur = '블러'; pixelate = '모자이크'; fill = '단색 덮기' }
-$CropModes = [ordered]@{ none = '안 함'; letterbox = '시네마틱 검은 띠 제거'; custom = '직접 지정' }
+$CropModes = [ordered]@{ none = '안 함'; letterbox = '시네마틱 레터박스 제거'; custom = '직접 지정' }
 $Formats   = [ordered]@{ original = '원본 유지'; png = 'PNG'; jpg = 'JPG' }
 $Units     = [ordered]@{ percent = '비율 (%)'; px = '픽셀 (px)' }
 
@@ -1730,7 +1730,7 @@ function Show-SettingsDialog($base) {
     $card.Controls.Add($body)
     $card.Controls.Add((New-Hint '각 가장자리에서 잘라낼 양을 입력해요.'))
     $card.Controls.Add((New-Hint '해상도가 다른 여러 이미지를 처리시 픽셀 단위는 범위가 달라지므로 비율을 권장해요.' $true))
-    $card.Controls.Add((New-Hint '띠 제거는 시네마틱으로 판별된 이미지에만 적용돼요.'))
+    $card.Controls.Add((New-Hint '레터박스 제거는 시네마틱으로 판별된 이미지에만 적용돼요.'))
     $root.Controls.Add($card)
 
     # ── 리사이즈 ──
