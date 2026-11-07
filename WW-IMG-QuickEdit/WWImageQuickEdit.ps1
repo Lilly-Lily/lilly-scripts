@@ -18,7 +18,8 @@ $AppVersion = '1.1'   # 창 제목에 표시되는 버전
 # ===================== 고정 설정 =====================
 # UID 영역: 4K(3840x2160) 기준 px 단위, @(가까운 쪽, 먼 쪽) 거리
 #   실제 크기 배율 = min(가로/3840, 세로/2160) → 해상도·화면 비율이 달라도 같은 위치
-$UidDesktopRight  = @(0, 423);    $UidDesktopBottom = @(0, 54)    # PC(16:9): 오른쪽·아래 가장자리 기준
+$UidDesktopRight  = @(70, 423);   $UidDesktopBottom = @(0, 54)    # PC(16:9): 오른쪽·아래 가장자리 기준
+$UidLegacyRight    = @(0, 423)                           # 2.2 버전까지(~25.04.28)의 이미지(16:9 일반 화면): UID가 오른쪽 끝에 더 가까움
 $UidMobileRight   = @(215, 570);  $UidMobileBottom  = @(0, 75)    # 휴대폰(16:9 외 비율)
 $UidCineRight     = @(47, 327);   $UidCineBottom    = @(-19, 54)  # 시네마틱: 검은 띠 제외 화면 아래 기준
 $DesktopRatio     = @(1.70, 1.85) # 이 범위의 가로/세로 비율이면 PC 레이아웃, 아니면 휴대폰 레이아웃
@@ -46,6 +47,7 @@ $LogFile         = Join-Path $ScriptDir 'error.log'
 # 작업 옵션 기본값 (창에서 선택한 값은 SettingsFile에 저장되어 다음에 재사용)
 $Defaults = [ordered]@{
     mask           = $true
+    legacy_uid     = $false        # 2.2 버전까지(~25.04.28)의 이미지(16:9)의 옛날 UID 위치로 가리기
     mask_mode      = 'blur'        # blur | pixelate | fill
     blur_radius    = 14            # 블러 강도 (4K 기준)
     pixel_block    = 14            # 모자이크 블록 크기 (4K 기준)
@@ -97,7 +99,9 @@ public class UidOpts
     public bool Mask = true;
     public string MaskMode = "blur";
     // UID 영역: 4K(3840x2160) 기준 px, {가까운 쪽, 먼 쪽} 거리
-    public double[] DeskRight  = new double[] { 0, 423 };
+    public double[] DeskRight  = new double[] { 70, 423 };
+    public double[] LegacyRight = new double[] { 0, 423 };   // 2.2 버전까지(~25.04.28)의 이미지(16:9 일반 화면)의 UID 위치
+    public bool LegacyUid = false;
     public double[] DeskBottom = new double[] { 0, 54 };
     public double[] MobRight   = new double[] { 215, 570 };
     public double[] MobBottom  = new double[] { 0, 75 };
@@ -248,7 +252,7 @@ public static class UidImg
             double ratio = (double)w / h;
             bool mobile = ratio < o.DeskRatioMin || ratio > o.DeskRatioMax;
             s = Math.Min(w / 3840.0, h / 2160.0);
-            rr = mobile ? o.MobRight : o.DeskRight;
+            rr = mobile ? o.MobRight : (o.LegacyUid ? o.LegacyRight : o.DeskRight);
             bb = mobile ? o.MobBottom : o.DeskBottom;
             edge = h; layout = mobile ? "mobile" : "normal";
         }
@@ -1055,6 +1059,7 @@ function Load-Opts {
         # 이전 버전 설정은 리사이즈 단위가 없고 가로 px만 있었음
         if (($names -contains 'resize_width') -and -not ($names -contains 'resize_unit')) { $o['resize_unit'] = 'px' }
         $o['mask']           = [bool]$o['mask']
+        $o['legacy_uid']     = [bool]$o['legacy_uid']
         $o['resize']         = [bool]$o['resize']
         $o['out_custom']     = [bool]$o['out_custom']
         $o['out_dir']        = [string]$o['out_dir']
@@ -1096,7 +1101,7 @@ function Get-Desc($o) {
     if ($o['mask']) {
         $mm = [string]$o['mask_mode']
         $extra = switch ($mm) { 'blur' { ' ' + $o['blur_radius'] } 'pixelate' { ' ' + $o['pixel_block'] } 'fill' { ' ' + $o['fill_color'] } default { '' } }
-        $l.Add('가리기: ' + $MaskModes[$mm] + $extra)
+        $l.Add('가리기: ' + $MaskModes[$mm] + $extra + $(if ($o['legacy_uid']) { ' (2.2 버전까지 위치)' } else { '' }))
     } else { $l.Add('가리기: 안 함') }
     if ($o['crop'] -eq 'custom') {
         $u = if ($o['crop_unit'] -eq 'px') { ' px' } else { '%' }
@@ -1206,6 +1211,8 @@ function New-CsOpts($o) {
     $c.CineBottom   = [double[]]$UidCineBottom
     $c.DeskRatioMin = [double]$DesktopRatio[0]
     $c.DeskRatioMax = [double]$DesktopRatio[1]
+    $c.LegacyRight  = [double[]]$UidLegacyRight
+    $c.LegacyUid    = [bool]$o['legacy_uid']
     $c.UltraRatioMin = [double]$UltraRatioMin
     $c.PixelBlock   = [int]$o['pixel_block']
     $c.BlurRadius   = [double]$o['blur_radius']
@@ -1627,6 +1634,7 @@ function Confirm-Settings {
 
     $o = [ordered]@{
         mask           = $sd.MaskToggle.Checked
+        legacy_uid     = [bool]$sd.LegacyToggle.Checked
         mask_mode      = $mode
         blur_radius    = [int]$sd.BlurUi.Num.Value
         pixel_block    = [int]$sd.PixUi.Num.Value
@@ -1733,6 +1741,14 @@ function Show-SettingsDialog($base) {
     Update-FillPreview
 
     $body.Controls.Add((New-Hint "기본값은 4K 기준, 강도가 약하면 UID가 잘 안 가려질 수 있어요. (최소값 $StrengthMin)"))
+    $sd.LegacyToggle = New-Toggle '2.2 버전까지의 이미지 (~25.04.28)' ([bool]$base['legacy_uid'])
+    $legacyRow = New-Object System.Windows.Forms.Panel
+    $legacyRow.Size = New-Size (Get-InnerW) (P 30)
+    $legacyRow.Margin = New-Pad 0 (P 8) 0 0
+    $sd.LegacyToggle.Dock = 'Right'
+    $legacyRow.Controls.Add($sd.LegacyToggle)
+    $body.Controls.Add($legacyRow)
+    $body.Controls.Add((New-Hint 'UID 위치가 달라진 2.3 버전 이전 이미지는 켜 주세요. 16:9 화면에만 적용돼요.'))
     $card.Controls.Add($body)
     $root.Controls.Add($card)
 
