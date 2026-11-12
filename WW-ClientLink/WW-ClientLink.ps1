@@ -4,13 +4,48 @@
               대상의 기존 폴더는 삭제하지 않고 이름 뒤에 _backup 을 붙여 보관하며, 확인 후 [백업 삭제]로 정리합니다.
   [링크 관리] 클라이언트(최대 4개: 원본 1 + 링크 3)를 등록해 링크 현황을 확인하고, 연결·해제·깨진 링크 정리·백업 삭제·업데이트 후 동기화를 합니다.
   등록 정보는 이 도구가 있는 폴더의 WW-ClientLink.json, 로그는 logs 폴더에 저장됩니다.
-  실행: powershell -NoProfile -ExecutionPolicy Bypass -File WW-ClientLink.ps1   (심볼릭 링크는 관리자 권한 또는 Windows 개발자 모드 필요)
+  실행: WW-ClientLink.bat 더블클릭 (관리자 권한이 아니면 UAC 창을 띄워 자기 자신을 관리자 권한으로 다시 실행합니다)
 #>
 param([switch]$NoGui)
 
 $ErrorActionPreference = 'Stop'
 $ToolVersion = '1.0'
 $GameDirName = 'Wuthering Waves Game'
+
+# ---------------------------------------------------------------- 관리자 권한 확인 / 자동 상승 (심볼릭 링크 생성에 필요)
+if (-not $NoGui) {
+    $elevId = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($elevId)
+
+    if (-not $principal.IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator
+    )) {
+        try {
+            Start-Process -FilePath 'powershell.exe' `
+                -Verb RunAs `
+                -ErrorAction Stop `
+                -ArgumentList @(
+                    '-NoProfile',
+                    '-ExecutionPolicy', 'Bypass',
+                    '-STA',
+                    '-WindowStyle', 'Hidden',
+                    '-File', "`"$PSCommandPath`""
+                )
+        }
+        catch {
+            Add-Type -AssemblyName System.Windows.Forms
+
+            [void][System.Windows.Forms.MessageBox]::Show(
+                "관리자 권한 실행이 취소되었거나 실패했습니다.`n`n$($_.Exception.Message)",
+                '명조 클라이언트 심볼릭 링크 도구',
+                'OK',
+                'Warning'
+            )
+        }
+
+        exit
+    }
+}
 
 # ---------------------------------------------------------------- 공용 함수
 
@@ -1894,7 +1929,7 @@ function Test-LinkSafety($ss, $targets, [bool]$needSymlink) {
     }
     $run = Get-RunningConflicts $games
     if ($run.Count -gt 0) { return ("관련 프로세스가 실행 중입니다. 런처(트레이 포함)와 게임을 완전히 종료한 뒤 다시 시도하세요:`r`n" + ($run -join ', ')) }
-    if ($needSymlink -and -not (Test-SymlinkAbility)) { return '심볼릭 링크를 만들 권한이 없습니다. 관리자 권한 PowerShell로 실행하거나 Windows 개발자 모드를 켜 주세요.' }
+    if ($needSymlink -and -not (Test-SymlinkAbility)) { return '심볼릭 링크를 만들 권한이 없습니다. 관리자 권한으로 실행해 주세요.' }
     return $null
 }
 
@@ -4106,7 +4141,7 @@ $form.Add_ResizeEnd({ $form.Invalidate($true) })
 $form.Add_Shown({
     Fit-Window
     $script:shownDone = $true
-    if (-not (Test-SymlinkAbility)) { Log '※ 심볼릭 링크를 만들 권한이 없습니다. 관리자 권한 PowerShell로 실행하거나 Windows 개발자 모드를 켜 주세요.' }
+    if (-not (Test-SymlinkAbility)) { Log '※ 심볼릭 링크를 만들 권한이 없습니다. 관리자 권한으로 실행해 주세요.' }
 })
 Do-Layout
 Update-Rows
