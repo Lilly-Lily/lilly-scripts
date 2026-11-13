@@ -1,6 +1,6 @@
 # 명조 셰이더 캐시 정리 도구
 
-Wuthering Waves Shader Cache Cleaner · v1.3
+Wuthering Waves Shader Cache Cleaner · v1.4
 
 명조(Wuthering Waves) 다중 클라이언트용 셰이더 캐시 정리 도구.
 
@@ -11,15 +11,15 @@ Wuthering Waves Shader Cache Cleaner · v1.3
 
 ## 다운로드
 
-[Release 페이지](https://github.com/Lilly-Lily/lilly-scripts/releases?q=WW-Cache-Cleaner)에서 가장 최신 버전의 `WW-Cache-Cleaner-v버전.zip`(예: `WW-Cache-Cleaner-v1.3.zip`) 파일을 받을 수 있음. `Source code`는 저장소 전체 사본이므로 받지 말 것.
+[Release 페이지](https://github.com/Lilly-Lily/lilly-scripts/releases?q=WW-Cache-Cleaner)에서 가장 최신 버전의 `WW-Cache-Cleaner-v버전.zip`(예: `WW-Cache-Cleaner-v1.4.zip`) 파일을 받을 수 있음. `Source code`는 저장소 전체 사본이므로 받지 말 것.
 
 ## 주요 기능
 
 - 명조 클라이언트 여러 개(Kuro·Google·Steam·Epic판 혼용 가능)의 `PSO`, `PSOReport` 캐시 일괄 정리
 - Windows와 NVIDIA·AMD·Intel 드라이버의 DirectX 셰이더 캐시 정리
 - **추가 정리 항목**(선택, 기본값 꺼짐): OpenGL·Vulkan·CUDA·Steam 셰이더 캐시를 체크해서 함께 정리
-- 명조 설치 경로 자동 감지(Steam 라이브러리, 드라이브별 흔한 설치 위치, Epic판). 처음 실행할 때 자동으로 한 번 실행함
-- **정밀 탐색**: 키워드와 깊이를 지정해 드라이브를 훑어서, 흔한 위치 밖에 설치한 명조도 찾음
+- **자동 탐색**: 흔한 설치 위치 → Steam 라이브러리 → 드라이브 정밀 탐색 순서로 명조 설치 경로를 한 번에 찾음. 정확도(빠름·보통·정확)와 탐색할 드라이브를 고를 수 있음
+- 처음 실행할 때는 흔한 위치와 Steam 라이브러리를 자동으로 확인해서 목록을 채움
 - Steam 라이브러리 자동 감지
 - 창(UI)에서 경로를 추가·변경·삭제하고 설정을 자동 저장
 - 진행 상황을 창과 로그 파일에 기록
@@ -36,7 +36,7 @@ Wuthering Waves Shader Cache Cleaner · v1.3
 2. 인터넷에서 받은 파일이라 실행이 막히면, `.ps1` 파일 속성에서 **차단 해제**를 체크함.
 3. 명조와 런처를 모두 종료함.
 4. `WWCacheCleaner.bat`을 더블클릭하고 UAC 창에서 [예]를 누름.
-5. 처음 실행하면 명조 설치 폴더를 자동으로 찾아 목록에 넣어 줌. 못 찾았거나 빠진 게 있으면 [자동 감지]·[정밀 탐색]으로 찾거나 직접 등록하고(예: `D:\Wuthering Waves`), 필요하면 추가 정리 항목을 체크한 뒤 [캐시 정리 실행]을 누름.
+5. 처음 실행하면 명조 설치 폴더를 자동으로 찾아 목록에 넣어 줌. 못 찾았거나 빠진 게 있으면 [자동 탐색]으로 찾거나 [직접 추가]로 등록하고(예: `D:\Wuthering Waves`), 필요하면 추가 정리 항목을 체크한 뒤 [캐시 정리 실행]을 누름.
 
 ## 구성 파일
 
@@ -44,7 +44,7 @@ Wuthering Waves Shader Cache Cleaner · v1.3
 | --- | --- |
 | `WWCacheCleaner.bat` | 실행 정책을 우회(`-ExecutionPolicy Bypass`)하고, 콘솔 창을 숨긴 채 `.ps1`을 실행하는 런처 |
 | `WWCacheCleaner.ps1` | 창(UI), 경로 판별, 캐시 삭제, 로그 기록을 모두 담당하는 본체 |
-| `settings.json` | 명조 경로, 추가 정리 항목 선택 상태, Steam 라이브러리 목록, 정밀 탐색 키워드·깊이. 처음 실행할 때 생기고, 설정을 바꿀 때마다 자동 저장 |
+| `settings.json` | 명조 경로, 추가 정리 항목 선택 상태, Steam 라이브러리 목록, 탐색 정확도. 처음 실행할 때 생기고, 설정을 바꿀 때마다 자동 저장 |
 | `ShaderCacheCleanup.log` | 마지막 실행 결과. 실행할 때마다 새로 씀 |
 
 로직은 모두 `.ps1` 안에 있어서 메모장으로 열어 바로 확인하고 고칠 수 있음. `settings.json`과 로그 파일은 개인 환경 파일이라 저장소에 포함하지 않음.
@@ -86,22 +86,23 @@ Wuthering Waves Shader Cache Cleaner · v1.3
 | CUDA 캐시 | `%APPDATA%\NVIDIA\ComputeCache` | 주로 영상 편집 등 GPU 가속 프로그램에서 사용함. 해당 프로그램이 처음 한 번 다시 컴파일함 |
 | Steam 셰이더 캐시 전체 | 등록한 라이브러리마다 `steamapps\shadercache` | Steam이 게임 폴더 밖에 따로 관리하는 캐시. 모든 Steam 게임이 셰이더를 다시 만듦. Steam판 명조의 PSO(게임 폴더 안)와는 별개 |
 
-명조 경로는 설치 루트만 등록하면 됨. 프로그램이 `루트\Wuthering Waves Game\Client\Saved`(Kuro·Google·Epic판)와 `루트\Client\Saved`(Steam판, 게임 폴더를 직접 지정한 경우)를 차례로 확인해서 있는 쪽을 씀.
+명조 경로는 설치 루트만 등록하면 됨. 모든 클라이언트(Kuro·Google·Steam·Epic판)는 `루트\Wuthering Waves Game\Client\Saved` 구조이며, 이 폴더가 있어야 명조 설치로 판단함. `Wuthering Waves Game` 폴더를 직접 지정해도 그 부모를 루트로 정리해서 등록함.
 
-### 자동 감지
+### 자동 탐색
 
-- **명조 경로 [자동 감지]**: 시간이 오래 걸리는 전체 디스크 검색은 하지 않고, 아래 위치만 빠르게 확인해서 `Client\Saved`가 있는 곳만 목록에 추가함.
-  - Steam 라이브러리의 `steamapps\common\Wuthering Waves`. `appmanifest_3513350.acf`에 적힌 `installdir` 폴더명도 함께 확인함
-  - 고정 드라이브마다 `X:\Wuthering Waves`, `X:\Wuthering Waves Game`, `X:\Program Files\Wuthering Waves`, `X:\Games\Wuthering Waves` 등 흔한 위치
-  - Epic판 폴더 `X:\Program Files\Epic Games\WutheringWavesj3oFh`, `X:\Epic Games\WutheringWavesj3oFh`, `X:\WutheringWavesj3oFh`
-  - 이 밖의 위치에 설치했다면 [정밀 탐색] 또는 [추가]로 등록해야 함.
-- **명조 경로 [정밀 탐색]**: 드라이브 루트부터 폴더 이름을 단계별로 확인하는 방식이라 [자동 감지]보다 오래 걸림. 읽기만 하며 아무것도 지우거나 바꾸지 않음.
-  - **키워드**: 폴더 이름에 들어 있으면 후보로 보는 글자(쉼표로 구분, 대소문자 무시). 기본값은 `wuthering`, `wuwa`, `kuro`, `명조`이며 [기본값] 버튼으로 되돌릴 수 있음. 설치 폴더 이름을 바꿨다면 그 이름의 일부를 추가하면 됨.
-  - **깊이**: 드라이브 루트를 0단계로 센 폴더 단계 수(기본 4, 최대 8). 예) `D:\Games\Kuro Games\Wuthering Waves`는 3단계. 깊을수록 오래 걸림.
-  - 키워드가 맞는 폴더에 `Client\Saved`가 있으면 명조로 판단하고 그 아래로는 더 내려가지 않음. 키워드 폴더 바로 아래 한 단계도 함께 확인함.
-  - `Windows`, `ProgramData`, `AppData`, 휴지통 같은 시스템 폴더와 바로가기·정션 폴더는 건너뜀.
-  - 탐색할 드라이브를 고르고, 진행 상황을 보면서 [중지]할 수 있음. 결과는 체크 목록으로 나오며, 체크한 항목만 경로 목록에 추가함. 새로 찾은 경로는 파란색 `추가 가능`, 이미 등록된 경로는 회색 `이미 등록됨`으로 표시하고 체크 없이 보여 줌.
-- **Steam 라이브러리 [자동 감지]**: 레지스트리의 Steam 설치 위치와 `libraryfolders.vdf`를 읽어 찾음.
+[자동 탐색]을 누르면 탐색 창이 열리고, 아래 세 단계를 차례로 실행해서 `Client\Saved`가 있는 위치를 결과 목록에 보여 줌. 읽기만 하며 아무것도 지우거나 바꾸지 않음.
+
+1. **흔한 위치**: 고정 드라이브마다 `X:\Wuthering Waves`, `X:\Wuthering Waves Game`, `X:\Program Files\Wuthering Waves`, `X:\Games\Wuthering Waves`, `X:\명조` 등과 Epic판 폴더(`X:\Program Files\Epic Games\WutheringWavesj3oFh`, `X:\Epic Games\WutheringWavesj3oFh`, `X:\WutheringWavesj3oFh`)를 확인함.
+2. **Steam 라이브러리**: 레지스트리의 Steam 설치 위치와 `libraryfolders.vdf`, Steam 라이브러리 목록에 등록한 폴더를 읽어서 `steamapps\common\Wuthering Waves`를 확인함. `appmanifest_3513350.acf`에 적힌 `installdir` 폴더명도 함께 확인함.
+3. **정밀 탐색**: 선택한 드라이브의 루트부터 폴더 이름을 단계별로 확인함. 앞의 두 단계보다 오래 걸림.
+   - **정확도**: 빠름·보통·정확을 고르며 각각 드라이브 루트에서 3·5·7단계 깊이까지 확인함(기본 보통). 정확할수록 더 깊은 폴더까지 보지만 오래 걸림. 선택값은 저장됨.
+   - **드라이브**: 탐색할 드라이브를 체크함. 하나도 체크하지 않으면 정밀 탐색은 건너뜀.
+   - 폴더 이름에 `wuthering`, `wuwa`, `kuro`, `명조`가 들어 있으면(대소문자 무시) 후보로 보고, 거기에 `Client\Saved`가 있으면 명조로 판단함. 찾으면 그 아래로는 더 내려가지 않고, 후보 폴더 바로 아래 한 단계도 함께 확인함.
+   - `Windows`, `ProgramData`, `AppData`, 휴지통 같은 시스템 폴더와 바로가기·정션 폴더는 건너뜀.
+
+진행 상황을 보면서 [중지]할 수 있음. 결과는 체크 목록으로 나오며 [선택 항목 추가]를 누르면 체크한 항목만 경로 목록에 추가하고, [선택 모두 해제]로 체크를 한 번에 풀 수 있음. 새로 찾은 경로는 파란색 `추가 가능`, 이미 등록된 경로는 회색 `이미 등록됨`으로 표시하고 체크 없이 보여 줌. 이 밖의 위치에 설치했다면 정확도를 높이거나 [직접 추가]로 등록해야 함.
+
+Steam 라이브러리의 [자동 감지]는 레지스트리의 Steam 설치 위치와 `libraryfolders.vdf`를 읽어 라이브러리 목록을 채움.
 
 ## 삭제와 결과 판정
 

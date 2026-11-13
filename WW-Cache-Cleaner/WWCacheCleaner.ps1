@@ -1,5 +1,5 @@
 ﻿# =====================================================
-#  명조 셰이더 캐시 정리 v1.3 (Wuthering Waves Shader Cache Cleaner)
+#  명조 셰이더 캐시 정리 v1.4 (Wuthering Waves Shader Cache Cleaner)
 #  - 명조 다중 클라이언트 PSO 캐시 + DirectX 셰이더 캐시(Windows/GPU 드라이버)
 #  - (선택) 추가 정리 항목: OpenGL / Vulkan / CUDA / Steam 셰이더 캐시
 #  - 설정은 같은 폴더의 settings.json 에 자동 저장
@@ -9,7 +9,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 $AppTitle   = '명조 셰이더 캐시 정리'
-$AppVersion = '1.3'
+$AppVersion = '1.4'
 
 # ---------- 관리자 권한 확인 / 자동 상승 ----------
 $identity  = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -143,6 +143,91 @@ namespace WWCC
 $UseModernPicker = $true
 try { Add-Type -TypeDefinition $FolderPickerSource -Language CSharp } catch { $UseModernPicker = $false }
 
+# 둥근 모서리 버튼 (컴파일에 실패하면 기본 버튼으로 대체)
+$RoundButtonSource = @'
+using System;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Windows.Forms;
+
+namespace WWCC
+{
+    public class RoundButton : Button
+    {
+        public bool Primary = false;
+        public int Radius = 8;
+        private bool hover = false;
+        private bool down = false;
+
+        public RoundButton()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            Cursor = Cursors.Hand;
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { hover = false; down = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnMouseDown(MouseEventArgs e) { down = true; Invalidate(); base.OnMouseDown(e); }
+        protected override void OnMouseUp(MouseEventArgs e) { down = false; Invalidate(); base.OnMouseUp(e); }
+        protected override void OnEnabledChanged(EventArgs e) { hover = false; down = false; Invalidate(); base.OnEnabledChanged(e); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            Color bg = (Parent != null) ? Parent.BackColor : SystemColors.Control;
+            g.Clear(bg);
+
+            Color fill, border, fore;
+            if (Primary)
+            {
+                if (!Enabled) fill = Color.FromArgb(160, 196, 240);
+                else if (down) fill = Color.FromArgb(0, 80, 150);
+                else if (hover) fill = Color.FromArgb(0, 90, 170);
+                else fill = Color.FromArgb(0, 103, 192);
+                border = fill;
+                fore = Color.White;
+            }
+            else
+            {
+                if (!Enabled) fill = Color.FromArgb(247, 247, 247);
+                else if (down) fill = Color.FromArgb(235, 235, 235);
+                else if (hover) fill = Color.FromArgb(246, 246, 246);
+                else fill = Color.White;
+                border = (Enabled && hover) ? Color.FromArgb(170, 170, 170) : Color.FromArgb(204, 204, 204);
+                fore = Enabled ? ForeColor : Color.FromArgb(170, 170, 170);
+            }
+
+            float r = Radius;
+            float w = Width - 1.5f;
+            float h = Height - 1.5f;
+            float d = r * 2;
+            GraphicsPath gp = new GraphicsPath();
+            gp.AddArc(0.5f, 0.5f, d, d, 180, 90);
+            gp.AddArc(0.5f + w - d, 0.5f, d, d, 270, 90);
+            gp.AddArc(0.5f + w - d, 0.5f + h - d, d, d, 0, 90);
+            gp.AddArc(0.5f, 0.5f + h - d, d, d, 90, 90);
+            gp.CloseFigure();
+            SolidBrush br = new SolidBrush(fill);
+            Pen pen = new Pen(border, 1);
+            g.FillPath(br, gp);
+            g.DrawPath(pen, gp);
+            br.Dispose(); pen.Dispose(); gp.Dispose();
+
+            TextRenderer.DrawText(g, Text, Font, ClientRectangle, fore,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
+        }
+    }
+}
+'@
+$UseRoundButton = $true
+try { Add-Type -TypeDefinition $RoundButtonSource -Language CSharp -ReferencedAssemblies 'System.Windows.Forms', 'System.Drawing' } catch { $UseRoundButton = $false }
+
+function New-FlatOrRoundButton {
+    if ($UseRoundButton) { return (New-Object WWCC.RoundButton) }
+    return (New-Object System.Windows.Forms.Button)
+}
+
 # ---------- 경로 / 상수 ----------
 $ScriptDir    = Split-Path -Parent $PSCommandPath
 $SettingsFile = Join-Path $ScriptDir 'settings.json'
@@ -206,8 +291,7 @@ function Get-DefaultSettings {
         CleanSteam     = $false
         SteamLibraries = @('C:\Program Files (x86)\Steam')
         Extras         = @{ OpenGL = $false; Vulkan = $false; CUDA = $false }
-        DeepKeywords   = @('wuthering', 'wuwa', 'kuro', '명조')
-        DeepDepth      = 4
+        DeepDepth      = 5      # 탐색 정확도: 3(빠름) / 5(보통) / 7(정확)
     }
 }
 
@@ -219,13 +303,11 @@ function Read-Settings {
             if ($null -ne $j.WWPaths)        { $d.WWPaths        = @($j.WWPaths | Where-Object { $_ }) }
             if ($null -ne $j.CleanSteam)     { $d.CleanSteam     = [bool]$j.CleanSteam }
             if ($null -ne $j.SteamLibraries) { $d.SteamLibraries = @($j.SteamLibraries | Where-Object { $_ }) }
-            if ($null -ne $j.DeepKeywords) {
-                $kw = @($j.DeepKeywords | Where-Object { $_ })
-                if ($kw.Count -gt 0) { $d.DeepKeywords = $kw }
-            }
             if ($null -ne $j.DeepDepth) {
                 $n = 0
-                if ([int]::TryParse([string]$j.DeepDepth, [ref]$n) -and $n -ge 1 -and $n -le 8) { $d.DeepDepth = $n }
+                if ([int]::TryParse([string]$j.DeepDepth, [ref]$n) -and $n -ge 1 -and $n -le 8) {
+                    if ($n -le 3) { $d.DeepDepth = 3 } elseif ($n -le 5) { $d.DeepDepth = 5 } else { $d.DeepDepth = 7 }
+                }
             }
             if ($null -ne $j.Extras) {
                 foreach ($k in @($d.Extras.Keys)) {
@@ -251,22 +333,37 @@ function Save-Settings {
             Vulkan = [bool]$ExtraChecks['Vulkan'].Checked
             CUDA   = [bool]$ExtraChecks['CUDA'].Checked
         }
-        DeepKeywords   = @($script:DeepKeywords)
         DeepDepth      = [int]$script:DeepDepth
     }
     try { $obj | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $SettingsFile -Encoding UTF8 } catch { }
 }
 
 # ---------- 경로 판별 ----------
+$WWGameDir = 'Wuthering Waves Game'
+
+# 설치 루트(또는 Game 폴더)에서 Client\Saved 찾기. 모든 클라이언트가 루트\Wuthering Waves Game\Client\Saved 구조
 function Resolve-WWSaved([string]$root) {
-    $candidates = @(
-        [IO.Path]::Combine($root, 'Wuthering Waves Game\Client\Saved'),
-        [IO.Path]::Combine($root, 'Client\Saved')
-    )
-    foreach ($c in $candidates) {
+    if (-not $root) { return $null }
+    $c = [IO.Path]::Combine($root, $WWGameDir, 'Client\Saved')
+    if (Test-Path -LiteralPath $c -PathType Container) { return $c }
+    # Game 폴더 자체를 등록한 경우
+    if ([IO.Path]::GetFileName($root.TrimEnd('\')) -ieq $WWGameDir) {
+        $c = [IO.Path]::Combine($root, 'Client\Saved')
         if (Test-Path -LiteralPath $c -PathType Container) { return $c }
     }
     return $null
+}
+
+# 등록 경로를 설치 루트로 정리: Game 폴더를 골랐으면 그 부모 폴더를 루트로 봄
+function Get-WWRoot([string]$p) {
+    if (-not $p) { return $p }
+    $n = $p.Trim()
+    if ($n.Length -gt 3) { $n = $n.TrimEnd('\') }
+    if (([IO.Path]::GetFileName($n) -ieq $WWGameDir) -and -not (Test-Path -LiteralPath ([IO.Path]::Combine($n, $WWGameDir)) -PathType Container)) {
+        $par = [IO.Path]::GetDirectoryName($n)
+        if ($par) { return $par }
+    }
+    return $n
 }
 
 function Get-SteamAppsDir([string]$lib) {
@@ -314,15 +411,9 @@ function Get-WWSteamDirNames([string]$apps) {
     return $names.ToArray()
 }
 
-# 명조 설치 루트 자동 탐색 (얕은 탐색: Steam 라이브러리 + 각 드라이브의 흔한 위치만 확인)
-function Find-WWInstalls([string[]]$extraSteamLibs = @()) {
+# Steam 라이브러리의 steamapps\common\<installdir> 확인
+function Find-WWSteam([string[]]$extraSteamLibs = @()) {
     $found = New-Object System.Collections.Generic.List[string]
-    $add = {
-        param($root)
-        if ((Resolve-WWSaved $root) -and -not ($found | Where-Object { $_ -ieq $root })) { $found.Add($root) }
-    }
-
-    # 1) Steam판: 모든 라이브러리의 steamapps\common\Wuthering Waves
     $libs = New-Object System.Collections.Generic.List[string]
     foreach ($l in @(Find-SteamLibraries) + $extraSteamLibs) {
         if ($l -and -not ($libs | Where-Object { $_ -ieq $l })) { $libs.Add($l) }
@@ -330,25 +421,41 @@ function Find-WWInstalls([string[]]$extraSteamLibs = @()) {
     foreach ($l in $libs) {
         $apps = Get-SteamAppsDir $l
         foreach ($n in @(Get-WWSteamDirNames $apps)) {
-            & $add ([IO.Path]::Combine($apps, 'common', $n))
+            $root = Get-WWRoot ([IO.Path]::Combine($apps, 'common', $n))
+            if ((Resolve-WWSaved $root) -and -not ($found | Where-Object { $_ -ieq $root })) { $found.Add($root) }
         }
     }
+    return $found.ToArray()
+}
 
-    # 2) Kuro·Google·Epic판: 고정 드라이브마다 흔한 위치 확인
+# 고정 드라이브마다 흔한 설치 위치 확인 (Kuro·Google·Epic판)
+function Find-WWQuick {
+    $found = New-Object System.Collections.Generic.List[string]
     $drives = @([IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady })
     foreach ($d in $drives) {
         $r = $d.RootDirectory.FullName
         foreach ($sub in @('Wuthering Waves', 'Wuthering Waves Game', 'Program Files\Wuthering Waves', 'Program Files (x86)\Wuthering Waves',
                            'Games\Wuthering Waves', 'Game\Wuthering Waves', 'Games\Kuro Games\Wuthering Waves', '명조',
                            'Program Files\Epic Games\WutheringWavesj3oFh', 'Epic Games\WutheringWavesj3oFh', 'WutheringWavesj3oFh')) {
-            & $add ([IO.Path]::Combine($r, $sub))
+            $root = Get-WWRoot ([IO.Path]::Combine($r, $sub))
+            if ((Resolve-WWSaved $root) -and -not ($found | Where-Object { $_ -ieq $root })) { $found.Add($root) }
         }
+    }
+    return $found.ToArray()
+}
+
+# 명조 설치 루트 자동 감지 (얕은 탐색: Steam 라이브러리 + 흔한 위치). 처음 실행할 때 사용
+function Find-WWInstalls([string[]]$extraSteamLibs = @()) {
+    $found = New-Object System.Collections.Generic.List[string]
+    foreach ($p in (@(Find-WWSteam $extraSteamLibs) + @(Find-WWQuick))) {
+        if ($p -and -not ($found | Where-Object { $_ -ieq $p })) { $found.Add($p) }
     }
     return $found.ToArray()
 }
 
 # ---------- 정밀 탐색 (느림: 드라이브 루트부터 폴더 이름을 단계별로 확인, 읽기만 함) ----------
 $script:DeepSeen = 0
+$script:WWKeywords = @('wuthering', 'wuwa', 'kuro', '명조')   # 폴더 이름에 들어 있으면 후보로 봄 (대소문자 무시)
 function Find-WWDeep {
     param(
         [string[]]$Roots,
@@ -363,9 +470,10 @@ function Find-WWDeep {
     $found = New-Object System.Collections.Generic.List[string]
     $addHit = {
         param($p)
-        if (-not ($found | Where-Object { $_ -ieq $p })) {
-            $found.Add($p)
-            if ($OnFound) { & $OnFound $p }
+        $root = Get-WWRoot $p
+        if (-not ($found | Where-Object { $_ -ieq $root })) {
+            $found.Add($root)
+            if ($OnFound) { & $OnFound $root }
         }
     }
     $queue = New-Object System.Collections.Generic.Queue[object]
@@ -498,11 +606,21 @@ function Invoke-Cleanup {
 
 # ---------- UI 헬퍼 ----------
 function New-Button([string]$text, [int]$w = 100) {
-    $b = New-Object System.Windows.Forms.Button
+    $b = New-FlatOrRoundButton
     $b.Text = $text
     $b.Size = New-Object System.Drawing.Size((S $w), (S 28))
     $b.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, (S 6))
+    Set-DlgSecondary $b
     return $b
+}
+
+# 경로 목록 모양 정리: 테두리·머리글 없이, 행 높이만 넉넉하게 (기본 ListView 그대로 사용)
+function Enable-PillList($lv) {
+    $lv.BorderStyle = 'None'
+    $lv.HeaderStyle = 'None'
+    $il = New-Object System.Windows.Forms.ImageList
+    $il.ImageSize = New-Object System.Drawing.Size(1, (S 26))
+    $lv.SmallImageList = $il
 }
 
 function New-PathList {
@@ -518,7 +636,10 @@ function New-PathList {
     $lv.Add_Resize({
         $w = $this.ClientSize.Width - $this.Columns[0].Width - 4
         if ($w -gt 50) { $this.Columns[1].Width = $w }
+        # 항목이 모두 들어가면 맨 위로 (위쪽이 비어 보이는 현상 방지)
+        if (($this.Items.Count -gt 0) -and (($this.Items.Count * (S 26)) -le $this.ClientSize.Height)) { $this.EnsureVisible(0) }
     })
+    Enable-PillList $lv
     return $lv
 }
 
@@ -573,11 +694,32 @@ function Show-Info([string]$text, [string]$icon = 'Information') {
     [void][System.Windows.Forms.MessageBox]::Show($form, $text, $AppTitle, 'OK', $icon)
 }
 
+# 둥근 테두리 상자 안에 목록을 넣음
+function New-RoundHost($inner) {
+    $h = New-Object System.Windows.Forms.Panel
+    $h.Dock = 'Fill'
+    $h.Padding = New-Object System.Windows.Forms.Padding((S 5))
+    $h.Margin = New-Object System.Windows.Forms.Padding(0)
+    Set-DoubleBuffered $h
+    $h.Add_Resize({ param($s, $e) $s.Invalidate() })
+    $h.Add_Paint({
+        param($s, $e)
+        $g = $e.Graphics
+        $g.SmoothingMode = 'AntiAlias'
+        $g.Clear($dgCard)
+        $gp = Get-RoundPath 0.5 0.5 ($s.Width - 2) ($s.Height - 2) (S 6)
+        $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(204, 204, 204), 1)
+        $g.DrawPath($pen, $gp)
+        $pen.Dispose(); $gp.Dispose()
+    })
+    $inner.Dock = 'Fill'
+    $inner.BackColor = $dgCard
+    $h.Controls.Add($inner)
+    return $h
+}
+
 function New-ListGroup([string]$title, $topControl, $listView, [object[]]$buttons) {
-    $grp = New-Object System.Windows.Forms.GroupBox
-    $grp.Text = $title
-    $grp.Dock = 'Fill'
-    $grp.Padding = New-Object System.Windows.Forms.Padding((S 8))
+    $grp = New-CardBox $title
 
     $tbl = New-Object System.Windows.Forms.TableLayoutPanel
     $tbl.Dock = 'Fill'
@@ -592,7 +734,7 @@ function New-ListGroup([string]$title, $topControl, $listView, [object[]]$button
         $tbl.Controls.Add($topControl, 0, 0)
         $tbl.SetColumnSpan($topControl, 2)
     }
-    $tbl.Controls.Add($listView, 0, 1)
+    $tbl.Controls.Add((New-RoundHost $listView), 0, 1)
 
     $flow = New-Object System.Windows.Forms.FlowLayoutPanel
     $flow.FlowDirection = 'TopDown'
@@ -607,19 +749,107 @@ function New-ListGroup([string]$title, $topControl, $listView, [object[]]$button
     return $grp
 }
 
-# ---------- 정밀 탐색 대화상자 ----------
-function Show-DeepScanDialog {
+# ---------- 탐색 창 디자인 도우미 ----------
+$dgBg     = [System.Drawing.Color]::FromArgb(243, 243, 243)
+$dgCard   = [System.Drawing.Color]::White
+$dgBorder = [System.Drawing.Color]::FromArgb(228, 228, 228)
+$dgText   = [System.Drawing.Color]::FromArgb(32, 32, 32)
+$dgSub    = [System.Drawing.Color]::FromArgb(96, 96, 96)
+$dgAccent = [System.Drawing.Color]::FromArgb(0, 103, 192)
+$dgFont     = New-Object System.Drawing.Font('Malgun Gothic', 9.5)
+$dgFontBold = New-Object System.Drawing.Font('Malgun Gothic', 9.5, [System.Drawing.FontStyle]::Bold)
+
+function Set-DoubleBuffered($c) {
+    try {
+        [System.Windows.Forms.Control].GetProperty('DoubleBuffered', [Reflection.BindingFlags]'Instance,NonPublic').SetValue($c, $true, $null)
+    } catch { }
+}
+
+function Get-RoundPath([float]$x, [float]$y, [float]$w, [float]$h, [float]$r) {
+    $gp = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $d = $r * 2
+    $gp.AddArc($x, $y, $d, $d, 180, 90)
+    $gp.AddArc($x + $w - $d, $y, $d, $d, 270, 90)
+    $gp.AddArc($x + $w - $d, $y + $h - $d, $d, $d, 0, 90)
+    $gp.AddArc($x, $y + $h - $d, $d, $d, 90, 90)
+    $gp.CloseFigure()
+    return $gp
+}
+
+# 파란 둥근 버튼 (주요 동작)
+function Set-DlgPrimary($b) {
+    $b.Font = $dgFontBold
+    if ($b.GetType().Name -eq 'RoundButton') { $b.Primary = $true; return }
+    # 예비: 기본 버튼 모양
+    $b.FlatStyle = 'Flat'
+    $b.FlatAppearance.BorderSize = 0
+    $b.Cursor = 'Hand'
+    $b.BackColor = $dgAccent
+    $b.ForeColor = [System.Drawing.Color]::White
+}
+
+# 흰 바탕 테두리 버튼 (보조 동작)
+function Set-DlgSecondary($b) {
+    if ($b.GetType().Name -eq 'RoundButton') { $b.Primary = $false; $b.ForeColor = $dgText; return }
+    $b.FlatStyle = 'Flat'
+    $b.FlatAppearance.BorderSize = 1
+    $b.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(204, 204, 204)
+    $b.Cursor = 'Hand'
+    $b.BackColor = [System.Drawing.Color]::White
+    $b.ForeColor = $dgText
+}
+
+# 둥근 모서리 흰 카드 (제목은 위쪽에 직접 그림)
+function New-CardBox([string]$title) {
+    $p = New-Object System.Windows.Forms.Panel
+    $p.Dock = 'Fill'
+    $p.Padding = New-Object System.Windows.Forms.Padding((S 12), (S 34), (S 12), (S 10))
+    $p.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, (S 8))
+    $p.Tag = $title
+    Set-DoubleBuffered $p
+    $p.Add_Resize({ param($s, $e) $s.Invalidate() })
+    $p.Add_Paint({
+        param($s, $e)
+        $g = $e.Graphics
+        $g.SmoothingMode = 'AntiAlias'
+        $g.Clear($s.Parent.BackColor)
+        $gp = Get-RoundPath 0.5 0.5 ($s.Width - 2) ($s.Height - 2) (S 8)
+        $br = New-Object System.Drawing.SolidBrush($dgCard)
+        $pen = New-Object System.Drawing.Pen($dgBorder, 1)
+        $g.FillPath($br, $gp); $g.DrawPath($pen, $gp)
+        $br.Dispose(); $pen.Dispose(); $gp.Dispose()
+        $rc = New-Object System.Drawing.Rectangle((S 14), (S 8), ($s.Width - (S 28)), (S 22))
+        [System.Windows.Forms.TextRenderer]::DrawText($g, [string]$s.Tag, $dgFontBold, $rc, $dgText,
+            [System.Windows.Forms.TextFormatFlags]'Left,VerticalCenter,SingleLine,NoPadding')
+    })
+    return $p
+}
+
+# 카드 안쪽 컨트롤의 배경을 흰색으로 맞춤
+function Set-CardBack($ctl) {
+    foreach ($c in $ctl.Controls) {
+        if (($c -is [System.Windows.Forms.Label]) -or ($c -is [System.Windows.Forms.CheckBox]) -or
+            ($c -is [System.Windows.Forms.TableLayoutPanel]) -or ($c -is [System.Windows.Forms.FlowLayoutPanel])) {
+            $c.BackColor = $dgCard
+        }
+        if ($c.HasChildren) { Set-CardBack $c }
+    }
+}
+
+# ---------- 탐색 대화상자 (흔한 위치 → Steam → 정밀 탐색) ----------
+function Show-ScanDialog {
     $dg = New-Object System.Windows.Forms.Form
     $script:dgForm = $dg
-    $dg.Text = '정밀 탐색'
-    $dg.Font = $form.Font
+    $dg.Text = '자동 탐색'
+    $dg.Font = $dgFont
+    $dg.BackColor = $dgBg
     $dg.AutoScaleMode = 'None'
     $dg.FormBorderStyle = 'FixedDialog'
     $dg.MaximizeBox = $false
     $dg.MinimizeBox = $false
     $dg.ShowInTaskbar = $false
     $dg.StartPosition = 'CenterParent'
-    $dg.ClientSize = New-Object System.Drawing.Size((S 560), (S 470))
+    $dg.ClientSize = New-Object System.Drawing.Size((S 720), (S 422))
 
     $mk = {
         param($ctl, $x, $y, $w, $h)
@@ -628,68 +858,100 @@ function Show-DeepScanDialog {
         $dg.Controls.Add($ctl)
         $ctl
     }
-    $newLabel = { param($text) $l = New-Object System.Windows.Forms.Label; $l.Text = $text; $l }
+    $newLabel = {
+        param($text)
+        $l = New-Object System.Windows.Forms.Label
+        $l.Text = $text
+        $l.BackColor = [System.Drawing.Color]::Transparent
+        $l.ForeColor = $dgText
+        $l.TextAlign = 'MiddleLeft'
+        $l
+    }
 
-    $lblDesc = & $newLabel '지정한 키워드가 이름에 들어간 폴더를 드라이브 루트부터 단계별로 찾고, 그 안에 Client\Saved가 있으면 명조 설치로 판단함. 읽기만 하며 아무것도 지우거나 바꾸지 않음.'
-    $lblDesc.ForeColor = $ColorDim
-    [void](& $mk $lblDesc 12 10 536 40)
+    # 1줄: 탐색 정확도(칩) · 드라이브 · [탐색 시작] [중지]
+    [void](& $mk (& $newLabel '정확도') 12 12 60 28)
+    $script:dgCmbAcc = New-Object System.Windows.Forms.ComboBox      # 선택값 보관용 (화면에는 칩으로 표시)
+    $script:dgCmbAcc.DropDownStyle = 'DropDownList'
+    [void]$script:dgCmbAcc.Items.AddRange(@('빠름', '보통', '정확'))
+    $accIdx = @{ 3 = 0; 5 = 1; 7 = 2 }[[int]$script:DeepDepth]
+    if ($null -eq $accIdx) { $accIdx = 1 }
+    $script:dgCmbAcc.SelectedIndex = $accIdx
+    [void](& $mk $script:dgCmbAcc 76 13 84 24)
+    $script:dgCmbAcc.Visible = $false
+    $script:dgChips = @()
+    for ($ai = 0; $ai -lt 3; $ai++) {
+        $ch = New-Object System.Windows.Forms.Panel
+        $ch.BackColor = $dg.BackColor
+        $ch.Cursor = 'Hand'
+        Set-DoubleBuffered $ch
+        $ch.Tag = @{ Idx = $ai; Text = @('빠름', '보통', '정확')[$ai] }
+        $ch.Add_Paint({
+            param($c, $e)
+            $g = $e.Graphics
+            $g.SmoothingMode = 'AntiAlias'
+            $on = ($script:dgCmbAcc.SelectedIndex -eq [int]$c.Tag.Idx)
+            $g.Clear($c.Parent.BackColor)
+            $gp = Get-RoundPath 0.5 0.5 ($c.Width - 2) ($c.Height - 2) (S 6)
+            if ($on) { $fc = $dgAccent; $lc = $dgAccent; $tc = [System.Drawing.Color]::White } else { $fc = $dgCard; $lc = $dgBorder; $tc = $dgText }
+            $br = New-Object System.Drawing.SolidBrush($fc)
+            $pen = New-Object System.Drawing.Pen($lc, 1)
+            $g.FillPath($br, $gp); $g.DrawPath($pen, $gp)
+            $br.Dispose(); $pen.Dispose(); $gp.Dispose()
+            $rc = New-Object System.Drawing.Rectangle(1, 0, $c.Width, $c.Height)
+            [System.Windows.Forms.TextRenderer]::DrawText($g, [string]$c.Tag.Text, $dgFont, $rc, $tc,
+                [System.Windows.Forms.TextFormatFlags]'HorizontalCenter,VerticalCenter,SingleLine,NoPadding')
+        })
+        $ch.Add_Click({
+            param($c, $e)
+            $script:dgCmbAcc.SelectedIndex = [int]$c.Tag.Idx
+            foreach ($o in $script:dgChips) { $o.Invalidate() }
+        })
+        [void](& $mk $ch (76 + $ai * 56) 13 52 26)
+        $script:dgChips += $ch
+    }
 
-    [void](& $mk (& $newLabel '키워드') 12 62 66 20)
-    $script:dgTxtKw = New-Object System.Windows.Forms.TextBox
-    $script:dgTxtKw.Text = (@($script:DeepKeywords) -join ', ')
-    [void](& $mk $script:dgTxtKw 80 59 280 24)
-    $btnKwDefault = New-Object System.Windows.Forms.Button
-    $btnKwDefault.Text = '기본값'
-    [void](& $mk $btnKwDefault 366 57 70 28)
-    $lblKwHint = & $newLabel '쉼표로 구분'
-    $lblKwHint.ForeColor = $ColorDim
-    [void](& $mk $lblKwHint 446 62 102 20)
-    $btnKwDefault.Add_Click({
-        $script:dgTxtKw.Text = (@((Get-DefaultSettings).DeepKeywords) -join ', ')
-    })
-
-    [void](& $mk (& $newLabel '깊이') 12 94 66 20)
-    $script:dgNumDepth = New-Object System.Windows.Forms.NumericUpDown
-    $script:dgNumDepth.Minimum = 1
-    $script:dgNumDepth.Maximum = 8
-    $script:dgNumDepth.Value = [Math]::Min(8, [Math]::Max(1, [int]$script:DeepDepth))
-    [void](& $mk $script:dgNumDepth 80 91 60 24)
-    $lblDepth = & $newLabel '루트 = 0단계 · 깊을수록 오래 걸림 (기본 4)'
-    $lblDepth.ForeColor = $ColorDim
-    [void](& $mk $lblDepth 150 94 400 20)
-
-    [void](& $mk (& $newLabel '드라이브') 12 126 66 20)
-    $flowDrv = New-Object System.Windows.Forms.FlowLayoutPanel
-    $flowDrv.WrapContents = $true
-    [void](& $mk $flowDrv 80 122 468 28)
+    [void](& $mk (& $newLabel '드라이브') 254 12 64 28)
     $script:dgDrives = @()
+    $dx = 322
     foreach ($d in @([IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady })) {
         $cb = New-Object System.Windows.Forms.CheckBox
-        $cb.Text = $d.Name
-        $cb.AutoSize = $true
+        $cb.Text = $d.Name.TrimEnd('\')
+        $cb.AutoSize = $false
         $cb.Checked = $true
-        $flowDrv.Controls.Add($cb)
+        $cb.TextAlign = 'MiddleLeft'
+        $cb.CheckAlign = 'MiddleLeft'
+        $cb.BackColor = [System.Drawing.Color]::Transparent
+        [void](& $mk $cb $dx 12 44 28)
+        $dx += 44
         $script:dgDrives += $cb
     }
 
-    $script:dgBtnStart = New-Object System.Windows.Forms.Button
+    $script:dgBtnStart = New-FlatOrRoundButton
     $script:dgBtnStart.Text = '탐색 시작'
-    [void](& $mk $script:dgBtnStart 12 156 100 28)
-    $script:dgBtnStop = New-Object System.Windows.Forms.Button
+    Set-DlgPrimary $script:dgBtnStart
+    [void](& $mk $script:dgBtnStart 512 10 110 32)
+    $script:dgBtnStop = New-FlatOrRoundButton
     $script:dgBtnStop.Text = '중지'
+    Set-DlgSecondary $script:dgBtnStop
     $script:dgBtnStop.Enabled = $false
-    [void](& $mk $script:dgBtnStop 118 156 80 28)
-    $script:dgLblStatus = & $newLabel '키워드와 깊이를 확인한 뒤 [탐색 시작]을 눌러 주세요.'
+    [void](& $mk $script:dgBtnStop 628 10 80 32)
+
+    # 2줄: 상태 줄 (긴 경로도 한 줄 전체를 씀) + 진행 막대
+    $script:dgLblStatus = & $newLabel '[탐색 시작]을 누르면 찾은 위치가 아래에 표시됩니다.'
+    $script:dgLblStatus.ForeColor = $dgSub
     $script:dgLblStatus.AutoEllipsis = $true
-    [void](& $mk $script:dgLblStatus 208 162 340 20)
+    [void](& $mk $script:dgLblStatus 12 50 696 24)
 
     $script:dgProg = New-Object System.Windows.Forms.ProgressBar
     $script:dgProg.Style = 'Marquee'
     $script:dgProg.MarqueeAnimationSpeed = 30
     $script:dgProg.Visible = $false
-    [void](& $mk $script:dgProg 12 192 536 8)
+    [void](& $mk $script:dgProg 12 78 696 6)
 
-    [void](& $mk (& $newLabel '찾은 위치 (체크한 항목을 목록에 추가)') 12 210 536 20)
+    # 결과 목록
+    $script:dgLblHead = & $newLabel ''
+    $script:dgLblHead.Font = $dgFontBold
+    [void](& $mk $script:dgLblHead 12 90 696 24)
     $script:dgList = New-Object System.Windows.Forms.ListView
     $script:dgList.View = 'Details'
     $script:dgList.CheckBoxes = $true
@@ -697,16 +959,43 @@ function Show-DeepScanDialog {
     $script:dgList.HideSelection = $false
     $script:dgList.MultiSelect = $false
     $script:dgList.HeaderStyle = 'None'
-    [void]$script:dgList.Columns.Add('경로', (S 400))
+    $dgIl = New-Object System.Windows.Forms.ImageList
+    $dgIl.ImageSize = New-Object System.Drawing.Size(1, (S 26))
+    $script:dgList.SmallImageList = $dgIl
+    [void]$script:dgList.Columns.Add('경로', (S 560))
     [void]$script:dgList.Columns.Add('상태', (S 110))
-    [void](& $mk $script:dgList 12 232 536 188)
+    [void](& $mk $script:dgList 12 116 696 250)
 
-    $script:dgBtnAdd = New-Object System.Windows.Forms.Button
+    $script:dgBtnAdd = New-FlatOrRoundButton
     $script:dgBtnAdd.Text = '선택 항목 추가'
-    [void](& $mk $script:dgBtnAdd 12 430 130 30)
-    $btnClose = New-Object System.Windows.Forms.Button
+    Set-DlgPrimary $script:dgBtnAdd
+    $script:dgBtnAdd.Enabled = $false
+    [void](& $mk $script:dgBtnAdd 12 376 150 34)
+    $script:dgBtnClear = New-FlatOrRoundButton
+    $script:dgBtnClear.Text = '선택 모두 해제'
+    Set-DlgSecondary $script:dgBtnClear
+    $script:dgBtnClear.Enabled = $false
+    [void](& $mk $script:dgBtnClear 170 376 130 34)
+    $btnClose = New-FlatOrRoundButton
     $btnClose.Text = '닫기'
-    [void](& $mk $btnClose 448 430 100 30)
+    Set-DlgSecondary $btnClose
+    [void](& $mk $btnClose 608 376 100 34)
+
+    # 목록 제목과 [선택 항목 추가] 상태 갱신
+    $script:dgUpdateHead = {
+        $total = 0; $sel = 0
+        foreach ($it in $script:dgList.Items) {
+            if ($it.Tag) { $total++; if ($it.Checked) { $sel++ } }
+        }
+        $script:dgLblHead.Text = "찾은 위치 $($script:dgList.Items.Count)개   (체크한 항목을 목록에 추가 · 선택 $sel/$total)"
+        $script:dgBtnAdd.Enabled = (($sel -gt 0) -and -not $script:dgScanning)
+        $script:dgBtnClear.Enabled = (($sel -gt 0) -and -not $script:dgScanning)
+    }
+    $script:dgList.Add_ItemChecked({
+        # 이미 등록된 경로는 체크할 수 없게 함
+        if (-not $_.Item.Tag -and $_.Item.Checked) { $_.Item.Checked = $false; return }
+        & $script:dgUpdateHead
+    })
 
     $script:dgScanning = $false
     $script:dgCancel = $false
@@ -716,6 +1005,9 @@ function Show-DeepScanDialog {
     $script:dgExisting = @()
 
     $script:dgBtnStop.Add_Click({ $script:dgCancel = $true })
+    $script:dgBtnClear.Add_Click({
+        foreach ($it in @($script:dgList.Items)) { if ($it.Checked) { $it.Checked = $false } }
+    })
     $btnClose.Add_Click({ $script:dgForm.Close() })
 
     $dg.Add_FormClosing({
@@ -740,64 +1032,73 @@ function Show-DeepScanDialog {
         $script:dgForm.Close()
     })
 
+    # 찾은 경로를 목록에 추가 (단계가 달라도 같은 경로는 한 번만)
+    $script:dgSeen = @{}
+    $script:dgAddRow = {
+        param($p)
+        $key = ([string]$p).TrimEnd('\').ToLowerInvariant()
+        if ($script:dgSeen.ContainsKey($key)) { return }
+        $script:dgSeen[$key] = $true
+        $lvi = New-Object System.Windows.Forms.ListViewItem([string]$p)
+        $lvi.UseItemStyleForSubItems = $false
+        if ($script:dgExisting | Where-Object { ([string]$_).TrimEnd('\') -ieq ([string]$p).TrimEnd('\') }) {
+            # 이미 등록된 경로: 찾았다는 표시만 하고 체크는 해제
+            $script:dgSkipped++
+            $lvi.Tag = ''
+            [void]$lvi.SubItems.Add('이미 등록됨')
+            $lvi.SubItems[1].ForeColor = $ColorDim
+        } else {
+            $lvi.Tag = [string]$p
+            $lvi.Checked = $true
+            [void]$lvi.SubItems.Add('추가 가능')
+            $lvi.SubItems[1].ForeColor = [System.Drawing.Color]::FromArgb(0, 102, 204)
+        }
+        [void]$script:dgList.Items.Add($lvi)
+        & $script:dgUpdateHead
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+
     $script:dgBtnStart.Add_Click({
-        $kws = @(($script:dgTxtKw.Text -split '[,;]') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-        $roots = @($script:dgDrives | Where-Object { $_.Checked } | ForEach-Object { $_.Text })
-        if ($kws.Count -eq 0) {
-            [void][System.Windows.Forms.MessageBox]::Show($script:dgForm, '키워드를 한 개 이상 입력해 주세요.', $AppTitle, 'OK', 'Warning')
-            return
-        }
-        if ($roots.Count -eq 0) {
-            [void][System.Windows.Forms.MessageBox]::Show($script:dgForm, '탐색할 드라이브를 한 개 이상 선택해 주세요.', $AppTitle, 'OK', 'Warning')
-            return
-        }
-        $script:DeepKeywords = $kws
-        $script:DeepDepth = [int]$script:dgNumDepth.Value
+        $kws = @($script:WWKeywords)
+        $roots = @($script:dgDrives | Where-Object { $_.Checked } | ForEach-Object { $_.Text + '\' })
+        $doDeep = ($roots.Count -gt 0)
+        $script:DeepDepth = @(3, 5, 7)[[Math]::Max(0, $script:dgCmbAcc.SelectedIndex)]
         Save-Settings
 
         $script:dgExisting = @(Get-ListPaths $lvWW)
         $script:dgSkipped = 0
+        $script:dgSeen = @{}
+        $script:DeepSeen = 0
         $script:dgList.Items.Clear()
         $script:dgCancel = $false
         $script:dgScanning = $true
         $script:dgBtnStart.Enabled = $false
-        $script:dgBtnAdd.Enabled = $false
         $script:dgBtnStop.Enabled = $true
         $script:dgProg.Visible = $true
+        & $script:dgUpdateHead
         $script:dgLblStatus.Text = '탐색 중...'
         [System.Windows.Forms.Application]::DoEvents()
 
         $err = $null
         try {
-            [void](Find-WWDeep -Roots $roots -Keywords $kws -MaxDepth $script:DeepDepth `
-                -OnFound {
-                    param($p)
-                    if ($script:dgExisting | Where-Object { $_ -ieq $p }) {
-                        # 이미 등록된 경로: 찾았다는 표시만 하고 체크는 해제
-                        $script:dgSkipped++
-                        $lvi = New-Object System.Windows.Forms.ListViewItem($p)
-                        $lvi.UseItemStyleForSubItems = $false
-                        $lvi.Tag = ''
-                        [void]$lvi.SubItems.Add('이미 등록됨')
-                        $lvi.SubItems[1].ForeColor = $ColorDim
-                        [void]$script:dgList.Items.Add($lvi)
-                    } else {
-                        $lvi = New-Object System.Windows.Forms.ListViewItem($p)
-                        $lvi.UseItemStyleForSubItems = $false
-                        $lvi.Tag = $p
-                        $lvi.Checked = $true
-                        [void]$lvi.SubItems.Add('추가 가능')
-                        $lvi.SubItems[1].ForeColor = [System.Drawing.Color]::FromArgb(0, 102, 204)
-                        [void]$script:dgList.Items.Add($lvi)
-                    }
-                    [System.Windows.Forms.Application]::DoEvents()
-                } `
-                -OnTick {
-                    param($dir, $n)
-                    $script:dgLblStatus.Text = "탐색 중... $n 폴더 확인 · $dir"
-                    [System.Windows.Forms.Application]::DoEvents()
-                } `
-                -IsCancelled { [System.Windows.Forms.Application]::DoEvents(); $script:dgCancel })
+            if (-not $script:dgCancel) {
+                $script:dgLblStatus.Text = '흔한 위치 확인 중...'; [System.Windows.Forms.Application]::DoEvents()
+                foreach ($p in @(Find-WWQuick)) { [void](& $script:dgAddRow $p) }
+            }
+            if (-not $script:dgCancel) {
+                $script:dgLblStatus.Text = 'Steam 라이브러리 확인 중...'; [System.Windows.Forms.Application]::DoEvents()
+                foreach ($p in @(Find-WWSteam @(Get-ListPaths $lvSteam))) { [void](& $script:dgAddRow $p) }
+            }
+            if ($doDeep -and -not $script:dgCancel) {
+                [void](Find-WWDeep -Roots $roots -Keywords $kws -MaxDepth $script:DeepDepth `
+                    -OnFound { param($p) [void](& $script:dgAddRow $p) } `
+                    -OnTick {
+                        param($dir, $n)
+                        $script:dgLblStatus.Text = "정밀 탐색 중... $n 폴더 확인 · $dir"
+                        [System.Windows.Forms.Application]::DoEvents()
+                    } `
+                    -IsCancelled { [System.Windows.Forms.Application]::DoEvents(); $script:dgCancel })
+            }
         } catch {
             $err = $_.Exception.Message
         }
@@ -807,14 +1108,18 @@ function Show-DeepScanDialog {
         if ($script:dgCloseAfter) { $script:dgForm.Close(); return }
         $script:dgProg.Visible = $false
         $script:dgBtnStart.Enabled = $true
-        $script:dgBtnAdd.Enabled = $true
+        & $script:dgUpdateHead
         $script:dgBtnStop.Enabled = $false
         $head = if ($err) { "오류: $err" } elseif ($cancelled) { '중지됨' } else { '완료' }
-        $msg = "$head · $($script:dgList.Items.Count)개 발견 (폴더 $($script:DeepSeen)개 확인"
-        if ($script:dgSkipped -gt 0) { $msg += ", 이미 등록된 $($script:dgSkipped)개 포함" }
-        $script:dgLblStatus.Text = $msg + ')'
+        $msg = "$head · $($script:dgList.Items.Count)개 발견"
+        $notes = @()
+        if ($script:dgSkipped -gt 0) { $notes += "이미 등록된 $($script:dgSkipped)개 포함" }
+        if (-not $doDeep) { $notes += '드라이브가 선택되지 않아 정밀 탐색 생략' } elseif ($script:DeepSeen -gt 0) { $notes += "정밀 탐색 폴더 $($script:DeepSeen)개 확인" }
+        if ($notes.Count -gt 0) { $msg += ' (' + ($notes -join ', ') + ')' }
+        $script:dgLblStatus.Text = $msg
     })
 
+    & $script:dgUpdateHead
     [void]$dg.ShowDialog($form)
     $dg.Dispose()
     return $script:dgResult
@@ -824,10 +1129,11 @@ function Show-DeepScanDialog {
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "$AppTitle v$AppVersion"
 $form.Font = New-Object System.Drawing.Font('Malgun Gothic', 9)
+$form.BackColor = $dgBg
 $form.AutoScaleMode = 'None'
 $form.StartPosition = 'CenterScreen'
-$form.ClientSize  = New-Object System.Drawing.Size((S 720), (S 878))
-$form.MinimumSize = New-Object System.Drawing.Size((S 600), (S 788))
+$form.ClientSize  = New-Object System.Drawing.Size((S 720), (S 877))
+$form.MinimumSize = New-Object System.Drawing.Size((S 600), (S 787))
 $form.Padding = New-Object System.Windows.Forms.Padding((S 10))
 
 $root = New-Object System.Windows.Forms.TableLayoutPanel
@@ -835,27 +1141,27 @@ $root.Dock = 'Fill'
 $root.ColumnCount = 1
 $root.RowCount = 5
 [void]$root.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100)))
-[void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, (S 236))))
-[void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, (S 167))))
-[void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, (S 165))))
+[void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, (S 214))))
+[void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, (S 178))))
+[void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, (S 176))))
 [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
 [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 $form.Controls.Add($root)
 
 # 명조 경로 그룹
 $lblWW = New-Object System.Windows.Forms.Label
-$lblWW.Text = '설치 루트 폴더를 지정하세요. 예) D:\Wuthering Waves   (더블클릭으로 경로 변경)'
+$lblWW.Text = '설치 루트 폴더를 지정하세요. 자동 탐색을 이용하면 빠르게 찾을 수 있습니다.'
 $lblWW.AutoSize = $true
 $lblWW.ForeColor = $ColorDim
 $lblWW.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, (S 6))
 
 $lvWW = New-PathList
-$btnWWAdd  = New-Button '추가'
+$btnWWAdd  = New-Button '직접 추가'
 $btnWWEdit = New-Button '변경'
 $btnWWDel  = New-Button '삭제'
-$btnWWAuto = New-Button '자동 감지'
-$btnWWDeep = New-Button '정밀 탐색'
-$grpWW = New-ListGroup '명조 클라이언트 경로' $lblWW $lvWW @($btnWWAdd, $btnWWEdit, $btnWWDel, $btnWWAuto, $btnWWDeep)
+$btnWWDeep = New-Button '자동 탐색'
+Set-DlgPrimary $btnWWDeep
+$grpWW = New-ListGroup '명조 클라이언트 경로' $lblWW $lvWW @($btnWWDeep, $btnWWAdd, $btnWWEdit, $btnWWDel)
 $root.Controls.Add($grpWW, 0, 0)
 
 # 추가 정리 항목 그룹 (체크리스트)
@@ -867,10 +1173,7 @@ function New-ExtraCheck([string]$text) {
     return $c
 }
 
-$grpExtra = New-Object System.Windows.Forms.GroupBox
-$grpExtra.Text = '추가 정리 항목 (선택)'
-$grpExtra.Dock = 'Fill'
-$grpExtra.Padding = New-Object System.Windows.Forms.Padding((S 8))
+$grpExtra = New-CardBox '추가 정리 항목 (선택)'
 
 $flowExtra = New-Object System.Windows.Forms.FlowLayoutPanel
 $flowExtra.FlowDirection = 'TopDown'
@@ -879,7 +1182,7 @@ $flowExtra.Dock = 'Fill'
 $flowExtra.AutoScroll = $true
 
 $lblExtra = New-Object System.Windows.Forms.Label
-$lblExtra.Text = '명조에는 필요 없는 항목(명조 PSO는 위에서 정리). 다른 게임이나 프로그램의 캐시까지 비우고 싶을 때 선택.'
+$lblExtra.Text = '명조에서는 사용하지 않는, 다른 게임이나 프로그램의 캐시까지 비우고 싶을 때 선택하세요.'
 $lblExtra.AutoSize = $true
 $lblExtra.ForeColor = $ColorDim
 $lblExtra.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, (S 6))
@@ -899,7 +1202,7 @@ $root.Controls.Add($grpExtra, 0, 1)
 
 # Steam 그룹
 $lblSteam = New-Object System.Windows.Forms.Label
-$lblSteam.Text = '위에서 Steam 셰이더 캐시를 선택하면 아래 라이브러리의 shadercache를 정리함.'
+$lblSteam.Text = '위에서 Steam 셰이더 캐시를 선택하면 아래 Steam이 따로 관리하는 라이브러리의 캐시를 정리합니다.'
 $lblSteam.AutoSize = $true
 $lblSteam.ForeColor = $ColorDim
 $lblSteam.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, (S 6))
@@ -908,7 +1211,8 @@ $lvSteam = New-PathList
 $btnSteamAdd  = New-Button '추가'
 $btnSteamDel  = New-Button '삭제'
 $btnSteamAuto = New-Button '자동 감지'
-$grpSteam = New-ListGroup 'Steam 라이브러리' $lblSteam $lvSteam @($btnSteamAdd, $btnSteamDel, $btnSteamAuto)
+Set-DlgPrimary $btnSteamAuto
+$grpSteam = New-ListGroup 'Steam 라이브러리' $lblSteam $lvSteam @($btnSteamAuto, $btnSteamAdd, $btnSteamDel)
 $root.Controls.Add($grpSteam, 0, 2)
 
 # 실행 줄
@@ -918,10 +1222,11 @@ $runRow.Dock = 'Fill'
 $runRow.WrapContents = $false
 $runRow.Margin = New-Object System.Windows.Forms.Padding(0, (S 6), 0, (S 6))
 
-$btnRun = New-Object System.Windows.Forms.Button
+$btnRun = New-FlatOrRoundButton
 $btnRun.Text = '캐시 정리 실행'
-$btnRun.Font = New-Object System.Drawing.Font('Malgun Gothic', 10, [System.Drawing.FontStyle]::Bold)
 $btnRun.Size = New-Object System.Drawing.Size((S 170), (S 38))
+Set-DlgPrimary $btnRun
+$btnRun.Font = New-Object System.Drawing.Font('Malgun Gothic', 10, [System.Drawing.FontStyle]::Bold)
 $btnRun.Margin = New-Object System.Windows.Forms.Padding(0)
 
 $btnOpenLog = New-Button '로그 파일 열기' 120
@@ -940,10 +1245,8 @@ $runRow.Controls.Add($lblHint)
 $root.Controls.Add($runRow, 0, 3)
 
 # 로그 그룹
-$grpLog = New-Object System.Windows.Forms.GroupBox
-$grpLog.Text = '진행 로그'
-$grpLog.Dock = 'Fill'
-$grpLog.Padding = New-Object System.Windows.Forms.Padding((S 8))
+$grpLog = New-CardBox '진행 로그'
+$grpLog.Margin = New-Object System.Windows.Forms.Padding(0)
 $txtLog = New-Object System.Windows.Forms.TextBox
 $txtLog.Multiline = $true
 $txtLog.ReadOnly = $true
@@ -951,13 +1254,15 @@ $txtLog.ScrollBars = 'Vertical'
 $txtLog.WordWrap = $false
 $txtLog.Dock = 'Fill'
 $txtLog.BackColor = [System.Drawing.SystemColors]::Window
-$grpLog.Controls.Add($txtLog)
+$txtLog.BorderStyle = 'None'
+$grpLog.Controls.Add((New-RoundHost $txtLog))
 $root.Controls.Add($grpLog, 0, 4)
+foreach ($cb0 in @($grpWW, $grpExtra, $grpSteam, $grpLog)) { Set-CardBack $cb0 }
 
 # ---------- 동작 ----------
 function Update-SteamEnabled {
     $on = $chkSteam.Checked
-    foreach ($c in @($lvSteam, $btnSteamAdd, $btnSteamDel, $btnSteamAuto)) { $c.Enabled = $on }
+    foreach ($c in @($btnSteamAdd, $btnSteamDel, $btnSteamAuto)) { $c.Enabled = $on }   # 목록은 켜 둠 (꺼지면 회색 바탕이 됨)
 }
 
 function Set-UiBusy([bool]$busy) {
@@ -969,6 +1274,7 @@ function Set-UiBusy([bool]$busy) {
 $btnWWAdd.Add_Click({
     $p = Select-Folder '명조 설치 폴더를 선택하세요. (예: D:\Wuthering Waves)' ''
     if (-not $p) { return }
+    $p = Get-WWRoot $p
     if (@(Get-ListPaths $lvWW) -contains $p) { Show-Info '이미 등록된 경로입니다.'; return }
     Add-PathItem $lvWW $p
     Update-Status
@@ -983,6 +1289,7 @@ $editWW = {
     $it = $lvWW.SelectedItems[0]
     $p = Select-Folder '명조 설치 폴더를 선택하세요.' $it.SubItems[1].Text
     if (-not $p) { return }
+    $p = Get-WWRoot $p
     $it.SubItems[1].Text = $p
     Update-Status
     Save-Settings
@@ -996,29 +1303,8 @@ $btnWWDel.Add_Click({
     Save-Settings
 })
 
-$btnWWAuto.Add_Click({
-    Set-UiBusy $true
-    try {
-        $hits = @(Find-WWInstalls @(Get-ListPaths $lvSteam))
-    } finally {
-        Set-UiBusy $false
-    }
-    if ($hits.Count -eq 0) {
-        Show-Info "명조 설치를 찾지 못했습니다.`n흔한 위치(드라이브 최상위, Program Files, Games, Steam 라이브러리)만 확인합니다.`n그 밖의 위치는 [정밀 탐색] 또는 [추가]로 등록해 주세요." 'Warning'
-        return
-    }
-    $existing = @(Get-ListPaths $lvWW)
-    $added = 0
-    foreach ($h in $hits) {
-        if (-not ($existing | Where-Object { $_ -ieq $h })) { Add-PathItem $lvWW $h; $added++ }
-    }
-    Update-Status
-    Save-Settings
-    Show-Info "명조 설치 $($hits.Count)개를 감지했고, 새로 $($added)개를 추가했습니다."
-})
-
 $btnWWDeep.Add_Click({
-    $picked = @(Show-DeepScanDialog)
+    $picked = @(Show-ScanDialog)
     if ($picked.Count -eq 0) { return }
     $existing = @(Get-ListPaths $lvWW)
     $added = 0
@@ -1027,7 +1313,7 @@ $btnWWDeep.Add_Click({
     }
     Update-Status
     Save-Settings
-    if ($added -gt 0) { Show-Info "정밀 탐색 결과 $($added)개를 목록에 추가했습니다." }
+    if ($added -gt 0) { Show-Info "탐색 결과 $($added)개를 목록에 추가했습니다." }
 })
 
 $btnSteamAdd.Add_Click({
@@ -1102,7 +1388,6 @@ if ($firstRun) {
     if ($libs.Count -gt 0) { $settings.SteamLibraries = $libs }
     $settings.WWPaths = @(Find-WWInstalls $libs)
 }
-$script:DeepKeywords = @($settings.DeepKeywords)
 $script:DeepDepth    = [int]$settings.DeepDepth
 foreach ($p in $settings.WWPaths)        { Add-PathItem $lvWW $p }
 foreach ($p in $settings.SteamLibraries) { Add-PathItem $lvSteam $p }
@@ -1117,7 +1402,7 @@ if ($firstRun) {
     if ($lvWW.Items.Count -gt 0) {
         $txtLog.AppendText("처음 실행: 명조 설치 $($lvWW.Items.Count)개를 자동 감지해 등록했습니다.`r`n")
     } else {
-        $txtLog.AppendText("처음 실행: 명조 설치를 자동으로 찾지 못했습니다. [자동 감지], [정밀 탐색] 또는 [추가]로 등록해 주세요.`r`n")
+        $txtLog.AppendText("처음 실행: 명조 설치를 자동으로 찾지 못했습니다. [자동 탐색] 또는 [직접 추가]로 등록해 주세요.`r`n")
     }
 }
 
