@@ -1,5 +1,5 @@
 ﻿<#
-  WW-ClientLink.ps1  -  명조 클라이언트 심볼릭 링크 도구 v1.0
+  WW-ClientLink.ps1  -  명조 클라이언트 심볼릭 링크 도구 v1.1
   [링크 생성] 원본 클라이언트의 Paks / Resources(영상 포함) / (UHD·HD·SD) 폴더를 대상 클라이언트에 심볼릭 링크로 연결해 용량 중복을 없앱니다.
               대상의 기존 폴더는 삭제하지 않고 이름 뒤에 _backup 을 붙여 보관하며, 확인 후 [백업 삭제]로 정리합니다.
   [링크 관리] 클라이언트(최대 4개: 원본 1 + 링크 3)를 등록해 링크 현황을 확인하고, 연결·해제·깨진 링크 정리·백업 삭제·업데이트 후 동기화를 합니다.
@@ -9,7 +9,7 @@
 param([switch]$NoGui)
 
 $ErrorActionPreference = 'Stop'
-$ToolVersion = '1.0'
+$ToolVersion = '1.1'
 $GameDirName = 'Wuthering Waves Game'
 
 # ---------------------------------------------------------------- 관리자 권한 확인 / 자동 상승 (심볼릭 링크 생성에 필요)
@@ -108,6 +108,8 @@ function Get-State([string]$p) {
         GameExists = $ge
         Exe        = ($ge -and (Test-Path -LiteralPath (Join-Path $game 'Wuthering Waves.exe') -PathType Leaf))
         NonEmpty   = $ne
+        Partial    = ((Test-Path -LiteralPath (Join-Path $root 'launcher.exe') -PathType Leaf) -and -not ($ge -and (Test-Path -LiteralPath (Join-Path $game 'Wuthering Waves.exe') -PathType Leaf)) -and $ne)
+        Seedable   = ((Test-Path -LiteralPath (Join-Path $root 'launcher.exe') -PathType Leaf) -and -not ($ge -and (Test-Path -LiteralPath (Join-Path $game 'Wuthering Waves.exe') -PathType Leaf)) -and -not $ne)
     }
 }
 function Get-Game([string]$p) { $st = Get-State $p; if ($st) { return $st.Game } else { return $null } }
@@ -115,9 +117,9 @@ function Get-Game([string]$p) { $st = Get-State $p; if ($st) { return $st.Game }
 # 링크 대상 폴더 목록 (Fixed = 항상 연결, 그 외 = 체크박스로 선택)
 $Items = @(
     @{ Key = 'Paks';      Sub = 'Client\Content\Paks';       Label = 'Paks  (공통 리소스)';              Fixed = $true  },
-    @{ Key = 'UHD';       Sub = 'Client\Content\UHD';        Label = 'UHD 리소스';                        Fixed = $false },
-    @{ Key = 'HD';        Sub = 'Client\Content\HD';         Label = 'HD 리소스';                         Fixed = $false },
-    @{ Key = 'SD';        Sub = 'Client\Content\SD';         Label = 'SD 리소스';                         Fixed = $false },
+    @{ Key = 'UHD';       Sub = 'Client\Content\UHD';        Label = 'UHD (최고 품질)';                   Quality = '최고 품질'; Fixed = $false },
+    @{ Key = 'HD';        Sub = 'Client\Content\HD';         Label = 'HD (고품질)';                        Quality = '고품질'; Fixed = $false },
+    @{ Key = 'SD';        Sub = 'Client\Content\SD';         Label = 'SD (표준 품질)';                      Quality = '표준 품질'; Fixed = $false },
     @{ Key = 'Resources'; Sub = 'Client\Saved\Resources';    Label = 'Resources  (버전별 리소스 · 영상)'; Fixed = $true  }
 )
 
@@ -131,7 +133,38 @@ function Get-ItemBackups([string]$game, $it) {
         Where-Object { $_.Name -match $rx -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
 }
 
-# 작업 계획: Kind = link / backup+link / relink / skip / error
+# 폴더 안에 파일이 하나도 없는지 (빈 하위 폴더만 있어도 빈 폴더로 본다)
+function Test-DirEmpty([string]$p) {
+    if (-not (Test-Path -LiteralPath $p -PathType Container)) { return $false }
+    return (-not (Get-ChildItem -LiteralPath $p -Recurse -File -Force -ErrorAction SilentlyContinue | Select-Object -First 1))
+}
+
+# 대상 폴더를 원본 폴더와 비교 (파일 경로와 크기만 비교, 내용은 읽지 않음)
+#  Status: same(전부 일치) / subset(대상 파일이 모두 원본에 있고 크기도 같음, 원본에 더 있음) / differs(원본에 없거나 크기가 다른 파일 있음)
+$script:cmpCache = @{}
+function Get-DirCompare([string]$srcDir, [string]$dstDir) {
+    $key = ($srcDir + '|' + $dstDir).ToLowerInvariant()
+    if ($script:cmpCache.ContainsKey($key)) { return $script:cmpCache[$key] }
+    $r = @{ Status = 'unknown'; Diff = 0; SrcN = 0; DstN = 0 }
+    try {
+        $sm = @{}
+        $sl = $srcDir.TrimEnd('\').Length + 1
+        foreach ($f in (New-Object IO.DirectoryInfo $srcDir).EnumerateFiles('*', [IO.SearchOption]::AllDirectories)) { $sm[$f.FullName.Substring($sl).ToLowerInvariant()] = $f.Length }
+        $dl = $dstDir.TrimEnd('\').Length + 1
+        $diff = 0; $dn = 0
+        foreach ($f in (New-Object IO.DirectoryInfo $dstDir).EnumerateFiles('*', [IO.SearchOption]::AllDirectories)) {
+            $dn++
+            $k = $f.FullName.Substring($dl).ToLowerInvariant()
+            if (-not $sm.ContainsKey($k) -or $sm[$k] -ne $f.Length) { $diff++ }
+        }
+        $r.SrcN = $sm.Count; $r.DstN = $dn; $r.Diff = $diff
+        if ($diff -gt 0) { $r.Status = 'differs' } elseif ($dn -eq $sm.Count) { $r.Status = 'same' } else { $r.Status = 'subset' }
+    } catch { }
+    $script:cmpCache[$key] = $r
+    return $r
+}
+
+# 작업 계획: Kind = link / backup+link / replace-empty / relink / skip / error
 function Build-Plan([string]$srcGame, [string]$dstGame, [string[]]$keys, $items = $Items) {
     $plan = @()
     foreach ($it in $items) {
@@ -141,7 +174,7 @@ function Build-Plan([string]$srcGame, [string]$dstGame, [string[]]$keys, $items 
         $kind = 'error'
         switch ($li.Kind) {
             'none' { $kind = 'link' }
-            'dir'  { $kind = 'backup+link' }
+            'dir'  { if (Test-DirEmpty $dst) { $kind = 'replace-empty' } else { $kind = 'backup+link' } }
             'file' { $kind = 'error' }
             'link' { if ((Get-NormPath $li.Target) -ieq (Get-NormPath $src)) { $kind = 'skip' } else { $kind = 'relink' } }
         }
@@ -182,7 +215,8 @@ function Read-Settings {
             if ($c -and $c.Path -and $c.Name -and ($cl.Count -lt $MaxClients)) {
                 $role = 'link'
                 if ($c.Role -eq 'src' -and -not $hasSrc) { $role = 'src'; $hasSrc = $true }
-                $cl += @{ Name = [string]$c.Name; Path = [string]$c.Path; Role = $role }
+                $kd = ''; if ($c.Kind) { $kd = [string]$c.Kind }
+                $cl += @{ Name = [string]$c.Name; Path = [string]$c.Path; Role = $role; Kind = $kd }
             }
         }
         $d.Clients = $cl
@@ -199,7 +233,7 @@ function Save-AppSettings {
     $s = $script:settings
     if (-not $s) { return $false }
     $obj = [ordered]@{
-        Clients         = @($script:clients | ForEach-Object { [ordered]@{ Name = $_.Name; Path = $_.Path; Role = $_.Role } })
+        Clients         = @($script:clients | ForEach-Object { [ordered]@{ Name = $_.Name; Path = $_.Path; Role = $_.Role; Kind = [string]$_.Kind } })
         Keywords        = @($s.Keywords)
         Depth           = [int]$s.Depth
         ClientsExpanded = [bool]$s.ClientsExpanded
@@ -217,6 +251,150 @@ function Save-AppSettings {
 function Sort-Clients($list) {
     $l = @($list)
     return @(@($l | Where-Object { $_.Role -eq 'src' }) + @($l | Where-Object { $_.Role -ne 'src' }))
+}
+
+# ---------------------------------------------------------------- 클라이언트 종류 (공식 / 구글 / 에픽 / 스팀)
+#  1차: 런처 설정 <런처 폴더>\<런처 버전>\Assets\KRApp.conf (Base64 + 바이트마다 XOR 0x63 인 JSON)의 appId 로 판정.
+#        런처 설치 때 함께 생기는 파일이라 게임을 받기 전(이식 대상)에도 있음. 키 값 등이 들어 있으므로 읽기만 하고 내용은 로그에 남기지 않음
+#  2차: KRLauncher 는 앱 ID 별로 %AppData%\KRLauncher\C<앱ID>\log 에 로그를 남기며, 로그(글자마다 XOR 9)에 설치 경로가 찍혀 있음.
+#        어느 앱 ID 의 로그에 이 설치 경로가 나오는지로 종류를 판정 (게임 폴더 JSON 의 appId 는 에픽·스팀이 같아 쓰지 않음)
+$script:KRKinds = @(@{ Name = '공식'; Id = '50004' }, @{ Name = '구글'; Id = '50009' }, @{ Name = '에픽'; Id = '50003' }, @{ Name = '스팀'; Id = '50019' })
+$script:krCache = @{}
+$script:krSrc = @{}
+# 런처 설정(KRApp.conf)의 앱 ID. 없거나 읽을 수 없으면 $null
+function Get-KRAppConfId([string]$root) {
+    try {
+        $dirs = @(Get-ChildItem -LiteralPath $root -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d+(\.\d+){1,3}$' -and (Test-Path -LiteralPath (Join-Path $_.FullName 'Assets\KRApp.conf') -PathType Leaf) })
+        if ($dirs.Count -eq 0) { return $null }
+    } catch { return $null }
+    # 버전이 높은 폴더부터 차례로 시도: 최신 폴더의 파일이 손상돼 있어도 다음 버전 폴더에서 읽음
+    foreach ($d in @($dirs | Sort-Object { [version]$_.Name } -Descending)) {
+        try {
+            $raw = ([IO.File]::ReadAllText((Join-Path $d.FullName 'Assets\KRApp.conf'))).Trim()
+            $pad = (4 - ($raw.Length % 4)) % 4; if ($pad) { $raw += ('=' * $pad) }
+            $b = [Convert]::FromBase64String($raw)
+            for ($k = 0; $k -lt $b.Length; $k++) { $b[$k] = [byte]($b[$k] -bxor 0x63) }
+            $m = [regex]::Match([Text.Encoding]::UTF8.GetString($b), '"appId"\s*:\s*"(\d+)"')
+            if ($m.Success) { return $m.Groups[1].Value }
+        } catch { }
+    }
+    return $null
+}
+# 런처 설정 기준 종류 이름. 없으면 ''
+function Get-KRKindConf([string]$root) {
+    $id = Get-KRAppConfId $root
+    if ($id) { foreach ($k in $script:KRKinds) { if ($k.Id -eq $id) { return $k.Name } } }
+    return ''
+}
+# 마지막 자동 판정의 근거 문구 (화면 안내용)
+function Get-KRKindSrcText([string]$root) {
+    $n = Get-NormPath $root
+    if ($script:krSrc[$n] -eq 'conf') { return '런처 설정 기준' }
+    return 'KRLauncher 기록 기준'
+}
+function Read-SharedBytes([string]$f) {
+    $fs = New-Object IO.FileStream($f, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    try { $b = New-Object byte[] $fs.Length; $n = 0; while ($n -lt $b.Length) { $r = $fs.Read($b, $n, $b.Length - $n); if ($r -le 0) { break }; $n += $r }; return $b } finally { $fs.Dispose() }
+}
+# 로그의 앞부분만 읽음 (런처 시작 줄에 설치 경로가 찍힘)
+function Read-SharedHead([string]$f, [int]$head) {
+    $fs = New-Object IO.FileStream($f, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    try {
+        $h = [int][Math]::Min([long]$head, [long]$fs.Length)
+        $b = New-Object byte[] $h; $n = 0
+        while ($n -lt $h) { $r = $fs.Read($b, $n, $h - $n); if ($r -le 0) { break }; $n += $r }
+        return , $b
+    } finally { $fs.Dispose() }
+}
+# (예전 방식) 큰 로그 전체를 읽지 않고 앞부분과 뒷부분만 읽음 (경로는 로그 시작이나 끝 쪽에 찍힘). 반환: byte[] 배열 목록
+function Read-SharedParts([string]$f, [int]$head, [int]$tail) {
+    $fs = New-Object IO.FileStream($f, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    try {
+        $out = @()
+        $len = [long]$fs.Length
+        $h = [int][Math]::Min([long]$head, $len)
+        $b = New-Object byte[] $h; $n = 0
+        while ($n -lt $h) { $r = $fs.Read($b, $n, $h - $n); if ($r -le 0) { break }; $n += $r }
+        $out += , $b
+        if ($len -gt $h) {
+            $start = [Math]::Max([long]$h, $len - [long]$tail)
+            $t = [int]($len - $start)
+            [void]$fs.Seek($start, [IO.SeekOrigin]::Begin)
+            $b2 = New-Object byte[] $t; $n = 0
+            while ($n -lt $t) { $r = $fs.Read($b2, $n, $t - $n); if ($r -le 0) { break }; $n += $r }
+            $out += , $b2
+        }
+        return $out
+    } finally { $fs.Dispose() }
+}
+# 설치 폴더(런처 폴더)로 종류 이름을 판정. 못 찾으면 ''
+function Get-KRKindAuto([string]$root) {
+    $n = Get-NormPath $root
+    if (-not $n) { return '' }
+    if ($script:krCache.ContainsKey($n)) { return $script:krCache[$n] }
+    $res = Get-KRKindConf $root
+    if ($res) { $script:krCache[$n] = $res; $script:krSrc[$n] = 'conf'; return $res }
+    $script:krSrc[$n] = 'log'
+    try {
+        $base = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'KRLauncher'
+        $lat = [Text.Encoding]::GetEncoding(28591)
+        $pb = [Text.Encoding]::UTF8.GetBytes($n.TrimEnd('\') + '\')
+        $pat = New-Object byte[] $pb.Length
+        for ($i = 0; $i -lt $pb.Length; $i++) { $pat[$i] = [byte]($pb[$i] -bxor 9) }
+        $patS = $lat.GetString($pat)
+        $best = 0; $bestName = ''; $tie = $false
+        $texts = @{}
+        foreach ($k in $script:KRKinds) {
+            $dir = Join-Path $base ('C' + $k.Id + '\log')
+            if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+            $texts[$k.Name] = @()
+            # 시작 줄이 있는 기본 로그(_숫자가 없는 파일)만, 최신 30개의 앞부분(256KB)
+            $files = @(Get-ChildItem -LiteralPath $dir -Filter 'App_*.log' -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '_\d{3}\.log$' } | Sort-Object LastWriteTime -Descending | Select-Object -First 30)
+            foreach ($f in $files) {
+                try { $texts[$k.Name] += $lat.GetString((Read-SharedHead $f.FullName 262144)) } catch { }
+            }
+        }
+        # 1차: 대소문자 구분 검색(빠름), 못 찾으면 2차: 대소문자 무시
+        foreach ($mode in @([StringComparison]::Ordinal, [StringComparison]::OrdinalIgnoreCase)) {
+            $best = 0; $bestName = ''; $tie = $false
+            foreach ($k in $script:KRKinds) {
+                if (-not $texts.ContainsKey($k.Name)) { continue }
+                $cnt = 0
+                foreach ($txt in $texts[$k.Name]) {
+                    $pos = 0
+                    while ($cnt -lt 200) { $pos = $txt.IndexOf($patS, $pos, $mode); if ($pos -lt 0) { break }; $cnt++; $pos += $patS.Length }
+                }
+                if ($cnt -gt $best) { $best = $cnt; $bestName = $k.Name; $tie = $false } elseif ($cnt -gt 0 -and $cnt -eq $best) { $tie = $true }
+            }
+            if ($best -gt 0) { break }
+        }
+        if ($best -gt 0 -and -not $tie) { $res = $bestName }
+    } catch { }
+    $script:krCache[$n] = $res
+    return $res
+}
+# 등록된 종류(있으면) → 자동 판정 순. 못 찾으면 ''
+function Get-ClientKind([string]$root) {
+    $n = Get-NormPath $root
+    foreach ($c in $script:clients) { if ((Get-NormPath $c.Path) -ieq $n -and $c.Kind) { return [string]$c.Kind } }
+    return (Get-KRKindAuto $root)
+}
+# 종류 선택 라디오 줄 (공식·구글·에픽·스팀·미지정). 반환: 라디오 배열
+function New-KindRadios($parent, [int]$x, [int]$y, [string]$sel) {
+    $out = @(); $names = @('공식', '구글', '에픽', '스팀', '미지정')
+    for ($i = 0; $i -lt 5; $i++) {
+        $rb = New-Object Windows.Forms.RadioButton; $rb.Text = $names[$i]
+        [void](Add-DlgControl $parent $rb ($x + $i * 66) $y 64 26)
+        $out += $rb
+    }
+    $hit = $false
+    foreach ($rb in $out) { if ($rb.Text -eq $sel) { $rb.Checked = $true; $hit = $true } }
+    if (-not $hit) { $out[4].Checked = $true }
+    return $out
+}
+function Get-KindFromRadios($rbs) {
+    foreach ($rb in $rbs) { if ($rb.Checked -and $rb.Text -ne '미지정') { return [string]$rb.Text } }
+    return ''
 }
 
 # 기본 이름: 클라이언트 1, 2, ... (사용 중이 아닌 가장 작은 번호)
@@ -290,6 +468,38 @@ function Get-ClientVersion([string]$game) {
     } catch { return $null }
 }
 
+# 설치된 팩의 실제 버전: launcherDownload\common 아래 버전 이름 폴더(예: 3.8.0) 중 OriginResource.json 이 들어 있는 가장 높은 것. 없으면 $null
+# OriginResource.json 은 그 버전이 설치(업데이트)될 때 남는 기록 파일이다. 사전 다운로드만 받은 폴더에는 패치(.krpdiff)만 있고 이 파일이 없으며,
+# 동기화가 사전 다운로드를 옮겨 가도 이 파일은 제자리에 남는다(Move-PreDownload 의 $SyncKeepNames).
+# 설정 파일(launcherDownloadConfig.json)은 동기화로 고칠 수 있어 실제 설치 상태와 어긋날 수 있다. 링크를 해제하고 백업을 복원한 클라이언트는
+# 설정만 최신이고 이 파일이 있는 가장 높은 폴더는 옛 버전으로 남는다.
+function Get-PackVersion([string]$game) {
+    if (-not $game) { return $null }
+    $dir = Join-Path (Join-Path $game 'launcherDownload') 'common'
+    $best = $null
+    try {
+        foreach ($d in @(Get-ChildItem -LiteralPath $dir -Directory -Force -ErrorAction Stop)) {
+            if ($d.Name -notmatch '^\d+\.\d+(\.\d+)?$') { continue }
+            if ($best -and ([version]$d.Name) -le ([version]$best)) { continue }
+            if (Test-Path -LiteralPath (Join-Path $d.FullName 'OriginResource.json') -PathType Leaf) { $best = $d.Name }
+        }
+    } catch { return $null }
+    if (-not $best) { return $null }
+    $m = [regex]::Match($best, '^(\d+)\.(\d+)(?:\.(\d+))?')
+    $patch = 0; if ($m.Groups[3].Success) { $patch = [int]$m.Groups[3].Value }
+    return @{ Base = ''; Content = $best; Major = [int]$m.Groups[1].Value; Minor = [int]$m.Groups[2].Value; Patch = $patch }
+}
+
+# 버전을 읽지 못한 원인 (짧은 문구). 버전을 읽을 수 있으면 빈 문자열
+function Get-VersionWhy([string]$game) {
+    if (Get-ClientVersion $game) { return '' }
+    if (-not $game) { return '게임 폴더 없음' }
+    $f = Join-Path $game 'launcherDownloadConfig.json'
+    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return '설정 파일 없음' }
+    try { $null = Get-Content -LiteralPath $f -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return '설정 파일 손상' }
+    return '설정 파일에 버전 없음'
+}
+
 # 원본 버전($sv)과 대상 버전($dv) 비교 (순수 함수)
 #   Level: ok(완전 일치) / patch(3.7 단위는 같고 끝자리만 다름: 허용) / minor(3.7 단위가 다름: 링크 불가) / unknown(확인 불가)
 function Compare-ClientVersion($sv, $dv) {
@@ -297,7 +507,7 @@ function Compare-ClientVersion($sv, $dv) {
     if ($sv.Major -ne $dv.Major -or $sv.Minor -ne $dv.Minor) {
         $lower = '대상'
         if (([version]$sv.Content) -lt ([version]$dv.Content)) { $lower = '원본' }
-        $blk = ("버전이 달라 링크할 수 없습니다.`r`n원본 {0} / 대상 {1}  ({2}.{3} 단위가 일치해야 함)`r`n`r`n{4} 쪽 버전이 더 낮습니다. 해당 런처에서 최신 버전으로 업데이트한 뒤 다시 진행하세요.`r`n(링크가 이미 걸린 상태라면 링크 쪽 런처로는 업데이트하지 마세요. 원본을 먼저 업데이트한 뒤 [링크 관리]의 [업데이트 후 동기화]를 사용하세요.)" -f $sv.Content, $dv.Content, $sv.Major, $sv.Minor, $lower)
+        $blk = ("버전이 달라 링크할 수 없습니다.`r`n원본 {0} / 대상 {1}  ({2}.{3} 단위가 일치해야 함)`r`n`r`n{4} 쪽 버전이 더 낮습니다. 해당 런처를 실행하여 최신 버전으로 업데이트한 뒤 다시 진행하세요.`r`n(링크가 이미 걸린 상태라면 링크 쪽 런처로는 업데이트하지 마세요. 원본을 먼저 업데이트한 뒤 [링크 관리]의 [업데이트 후 동기화]를 사용하세요.)" -f $sv.Content, $dv.Content, $sv.Major, $sv.Minor, $lower)
         return @{ Level = 'minor'; Line = ('✖  버전 불일치 (원본 {0} · 대상 {1})' -f $sv.Content, $dv.Content); Block = $blk }
     }
     if ($sv.Patch -ne $dv.Patch) {
@@ -314,44 +524,61 @@ function Get-SyncState($sv, $dv) {
     return 'ok'
 }
 # [업데이트 후 동기화] 버튼 활성 조건 (준비만 해 둠, 아직 버튼에 적용하지 않음): 동기화가 필요한 클라이언트가 하나라도 있는가
+function Test-UpdateNeeded {
+    foreach ($k in @($script:csync.Keys)) { if ($script:csync[$k] -eq 'update') { return $true } }
+    return $false
+}
 function Test-SyncNeeded {
     foreach ($k in @($script:csync.Keys)) { if ($script:csync[$k] -eq 'need') { return $true } }
     return $false
 }
 
 # 링크 가능 여부 판정: 버전(Major.Minor)만 비교합니다. (런처의 LocalGameResources.json 은 링크 클라이언트에서 갱신되지 않아 판정에 쓰지 않음)
-#  Level: ok / patch(경고) / minor(링크 불가) / unknown.  Tag = 목록 표시용 짧은 문구
+#  Level: ok / patch(주의) / minor(링크 불가) / unknown.  Tag = 목록 표시용 짧은 문구
 function Get-LinkCompat([string]$srcGame, [string]$dstGame, $keys) {
     $sv = Get-ClientVersion $srcGame; $dv = Get-ClientVersion $dstGame
     $vc = Compare-ClientVersion $sv $dv
-    $tag = '확인 불가'
+    $tag = '미확인'
     if ($vc.Level -eq 'ok') { $tag = '버전 일치' } elseif ($vc.Level -eq 'patch') { $tag = '패치 차이' } elseif ($vc.Level -eq 'minor') { $tag = '버전 불일치' }
     return @{ Level = $vc.Level; Line = $vc.Line; Block = $vc.Block; Tag = $tag; Short = '버전 불일치' }
 }
 
-# 선택한 폴더가 모두 이미 원본으로 링크되어 있는가 (원본에 폴더가 있는 항목만 대상)
-function Test-AlreadyLinked([string]$srcGame, [string]$dstGame, $keys) {
-    $n = 0
-    foreach ($k in @($keys)) {
+# 링크 탐색 판정용: 원본 기준으로 대상의 링크 현황.
+# 필수 폴더(Paks, Resources)는 모두, 품질 리소스(UHD/HD/SD)는 원본에 있는 것 중 하나 이상 링크돼 있으면 구성된 것으로 본다.
+function Get-LinkProgress([string]$srcGame, [string]$dstGame) {
+    $res = @{ Any = $false; Done = $false; Missing = @(); Quality = @(); NeedQuality = $false }
+    $qualSrc = 0
+    foreach ($key in 'Paks', 'Resources', 'UHD', 'HD', 'SD') {
         $it = $null
-        foreach ($x in $Items) { if ($x.Key -eq $k) { $it = $x } }
+        foreach ($x in $Items) { if ($x.Key -eq $key) { $it = $x } }
         if (-not $it) { continue }
         $sp = Join-Path $srcGame $it.Sub
         if ((Get-LinkInfo $sp).Kind -ne 'dir') { continue }
+        $isQ = (@('UHD', 'HD', 'SD') -contains $key)
+        if ($isQ) { $qualSrc++ }
         $di = Get-LinkInfo (Join-Path $dstGame $it.Sub)
-        if ($di.Kind -ne 'link' -or -not $di.TargetExists -or ((Get-NormPath $di.Target) -ine (Get-NormPath $sp))) { return $false }
-        $n++
+        $ok = [bool]($di.Kind -eq 'link' -and $di.TargetExists -and ((Get-NormPath $di.Target) -ieq (Get-NormPath $sp)))
+        if ($ok) { $res.Any = $true; if ($isQ) { $res.Quality += $key } }
+        elseif (-not $isQ) { $res.Missing += $key }
     }
-    return ($n -gt 0)
+    $res.NeedQuality = [bool]($qualSrc -gt 0 -and $res.Quality.Count -eq 0)
+    $res.Done = [bool]($res.Any -and $res.Missing.Count -eq 0 -and -not $res.NeedQuality)
+    return $res
 }
 
 # 확인창에 덧붙일 안내 (문제 없으면 빈 문자열)
-function Get-VersionNote($srcGame, $dstGame, [string]$name = '', $keys = $null) {
+function Get-VersionNote($srcGame, $dstGame, [string]$name = '', $keys = $null, [bool]$allowLower = $false) {
     if (-not $keys) { $keys = @('Paks', 'UHD') }
     $cv = Get-LinkCompat $srcGame $dstGame $keys
     $pre = ''; if ($name) { $pre = '[' + $name + '] ' }
     if ($cv.Level -eq 'patch') { return ($pre + $cv.Line + "`r`n    끝자리만 다른 경우는 허용하지만, 이후 업데이트는 원본 -> 링크 순서로 하세요.`r`n") }
     if ($cv.Level -eq 'unknown') { return ($pre + $cv.Line + "`r`n") }
+    if ($allowLower -and $cv.Level -eq 'minor') {
+        $sv1 = Get-ClientVersion $srcGame; $dv1 = Get-ClientVersion $dstGame
+        if ($sv1 -and $dv1 -and (([version]$dv1.Content) -lt ([version]$sv1.Content))) {
+            return ($pre + ('△  원본보다 낮은 버전 (원본 {0} · 대상 {1})' -f $sv1.Content, $dv1.Content) + "`r`n링크 후 '동기화 필요' 상태가 됩니다. 런처를 실행하기 전에 [업데이트 후 동기화]를 먼저 진행하세요.`r`n")
+        }
+    }
     return ''
 }
 
@@ -455,7 +682,7 @@ function Get-SyncSource([string]$srcGame) {
             }
         } catch { }
     }
-    foreach ($pk in 'common', 'uhd') {
+    foreach ($pk in 'common', 'uhd', 'hd', 'sd') {
         $pf = Join-Path $srcGame ('launcherDownloadConfig\' + $pk + '.json')
         if (Test-Path -LiteralPath $pf -PathType Leaf) {
             try {
@@ -486,7 +713,7 @@ function Get-SyncEdits([string]$dstGame, $sv) {
         if ($ch.Count -gt 0) { $edits += @{ Rel = 'launcherDownloadConfig.json'; Changes = $ch; NewText = $txt; Bom = $t.Bom } }
     }
     # 2) launcherDownloadConfig\common.json, uhd.json : version
-    foreach ($pk in 'common', 'uhd') {
+    foreach ($pk in 'common', 'uhd', 'hd', 'sd') {
         $rel = 'launcherDownloadConfig\' + $pk + '.json'
         $pf = Join-Path $dstGame $rel
         if ($sv.Packs.ContainsKey($pk) -and (Test-Path -LiteralPath $pf -PathType Leaf)) {
@@ -537,7 +764,7 @@ function Test-SyncEdits([string]$dstGame, $sv, $edits = @()) {
             }
         } catch { $probs += 'launcherDownloadConfig.json 을 JSON으로 읽을 수 없습니다.' }
     }
-    foreach ($pk in 'common', 'uhd') {
+    foreach ($pk in 'common', 'uhd', 'hd', 'sd') {
         $rel = 'launcherDownloadConfig\' + $pk + '.json'
         $t2 = & $txtOf $rel
         if ($t2 -and $sv.Packs.ContainsKey($pk)) {
@@ -767,7 +994,7 @@ function Get-CellLabel([string]$kind, $li, $stat, [bool]$hasSrc) {
         'src'     { return @{ Title = '원본 폴더'; Sub = ('{0} · {1}개' -f $sz, $stat.Count) } }
         'srclink' { return @{ Title = '! 원본이 링크'; Sub = [string]$li.Target } }
         'srcna'   { return @{ Title = '없음'; Sub = '원본에 없는 폴더' } }
-        'noexe'   { return @{ Title = '구성 파일 없음'; Sub = '' } }
+        'noexe'   { return @{ Title = '클라이언트 없음'; Sub = '' } }
         'ok'      { return @{ Title = '✔ 원본에 연결됨'; Sub = '링크' } }
         'real'    { return @{ Title = '실제 폴더'; Sub = ('연결 가능 · ' + $sz) } }
         'real0'   { if ($hasSrc) { return @{ Title = '실제 폴더'; Sub = '원본에 없음' } } else { return @{ Title = '실제 폴더'; Sub = '원본을 지정하세요' } } }
@@ -807,17 +1034,19 @@ function Get-LinkedFixed([string]$game) {
     return $out
 }
 
-function Get-ClientAnalysis([string]$root) {
+function Get-ClientAnalysis([string]$root, [string]$baseGame = '') {
     $st = Get-State $root
     $r = @{ Root = $st.Root; Game = $st.Game; Launcher = $st.Launcher; Exe = $st.Exe; Text = '—'; Color = 'dim'
-            LinkGames = @(); Bytes = [long]0; DirN = 0; LinkN = 0; M = 0; Ver = $null; Linked = $false }
-    if (-not $st.Exe) { return $r }
+            LinkGames = @(); Bytes = [long]0; DirN = 0; LinkN = 0; M = 0; Ver = $null; Linked = $false; Seed = [bool]$st.Seedable; Part = [bool]$st.Partial }
+    if (-not $st.Exe) { if ($st.Seedable) { $r.Text = '클라이언트 없음 · 이식 가능' } elseif ($st.Partial) { $r.Text = '클라이언트 없음 · 부분 복구 필요' }; return $r }
     $r.Ver = Get-ClientVersion $st.Game
     $r.Linked = (@(Get-LinkedFixed $st.Game).Count -gt 0)
-    foreach ($key in 'Paks', 'Resources', 'UHD') {
+    $tot = 0
+    foreach ($key in 'Paks', 'Resources', 'UHD', 'HD', 'SD') {
         $it = $null
         foreach ($x in $Items) { if ($x.Key -eq $key) { $it = $x } }
         $p = Join-Path $st.Game $it.Sub
+        if ($baseGame -and ((Get-LinkInfo (Join-Path $baseGame $it.Sub)).Kind -eq 'dir')) { $tot++ }
         $li = Get-LinkInfo $p
         if ($li.Kind -eq 'dir') { $r.DirN++; $r.M++; $r.Bytes += (Get-DirStat $p).Bytes }
         elseif ($li.Kind -eq 'link') {
@@ -826,29 +1055,76 @@ function Get-ClientAnalysis([string]$root) {
             if ($g -and ($r.LinkGames -notcontains $g)) { $r.LinkGames += $g }
         }
     }
+    $den = [Math]::Max($r.M, $tot)
     if ($r.M -eq 0) { $r.Text = '대상 폴더 없음' }
     elseif ($r.LinkN -eq $r.M) {
         $to = ''; if ($r.LinkGames.Count -gt 0) { $to = ' → ' + $r.LinkGames[0] }
-        $r.Text = ('링크 {0}/{1}{2}' -f $r.LinkN, $r.M, $to); $r.Color = 'ok'
+        $r.Text = ('링크 {0}/{1}{2}' -f $r.LinkN, $den, $to); $r.Color = 'ok'
     }
-    elseif ($r.DirN -eq $r.M) { $r.Text = ('실제 폴더 {0}/{1} · {2}' -f $r.DirN, $r.M, (Format-Size $r.Bytes)); $r.Color = 'normal' }
+    elseif ($r.DirN -eq $r.M) { $r.Text = ('실제 폴더 {0}/{1} · {2}' -f $r.DirN, $den, (Format-Size $r.Bytes)); $r.Color = 'normal' }
     else { $r.Text = ('링크 {0} · 실제 폴더 {1}' -f $r.LinkN, $r.DirN); $r.Color = 'warn' }
     return $r
 }
 
 # 탐색 결과 행(Already, An 사용)에 제안 역할을 채운다. 행: @{ Already; An; Role; Tag; Sub }
+# 원본과 버전이 달라(Major.Minor) 링크할 수 없는 클라이언트를 새로 등록/선택할 때 한 번 더 묻는 안내.
+# 반환: $null(해당 없음) 또는 @{ Tag; Msg }
+function Get-RegCaution([string]$srcGame, [string]$dstGame) {
+    if (-not $srcGame -or -not $dstGame) { return $null }
+    try {
+        $cv = Get-LinkCompat $srcGame $dstGame @('Paks', 'UHD')
+        if ($cv.Level -ne 'minor') { return $null }
+        $sv = Get-ClientVersion $srcGame; $dv = Get-ClientVersion $dstGame
+        if (-not $sv -or -not $dv) { return $null }
+        $vs = ('원본 {0} · 이 클라이언트 {1}' -f $sv.Content, $dv.Content)
+        # 새로 등록하는 낮은 버전은 런처 업데이트가 정석 절차. 강제로 등록하려면 링크 연결 후 동기화 절차를 따라야 한다.
+        if (([version]$dv.Content) -lt ([version]$sv.Content)) {
+            return @{ Tag = '업데이트 필요'; Msg = ("원본보다 낮은 버전입니다 ({0}).`r`n런처를 실행하여 업데이트를 먼저 하는 것을 권장합니다.`r`n강제 등록하는 경우에는 원본에 링크 연결을 먼저 하고 '업데이트 후 동기화' 절차를 따라야 합니다.`r`n`r`n그래도 선택할까요?" -f $vs) }
+        }
+        return @{ Tag = '링크 불가'; Msg = ("원본보다 최신 버전입니다 ({0}).`r`n링크하려면 원본을 먼저 업데이트해야 합니다.`r`n`r`n그래도 선택할까요?" -f $vs) }
+    } catch { return $null }
+}
+
 function Set-RoleSuggestions($rows, [bool]$hasSrc, [string]$srcGame) {
-    $live = @($rows | Where-Object { -not $_.Already -and -not $_.Flat })
+    # 클라이언트 파일은 있는데 버전을 읽지 못한 행은 '미확인'으로 두고 체크할 수 없게 한다 (원본 후보 계산에서도 뺀다)
+    $live = @($rows | Where-Object { -not $_.Already -and -not $_.Flat -and -not ($_.An.Exe -and -not $_.An.Ver) })
     foreach ($r in $rows) {
-        if ($r.Flat) { $r.Role = ''; $r.Tag = '구조 다름'; $r.Sub = '3.7 Steam 구조 · 링크 불가'; continue }
-        if ($r.Already) { $r.Role = ''; $r.Tag = '이미 등록됨'; $r.Sub = ''; continue }
+        $r.Lvl = ''; $r.NoPick = $false; $r.NoPickMsg = ''; $r.Caution = ''
+        if ($r.Flat) { $r.Role = ''; $r.Tag = '구조 다름'; $r.Sub = '구버전 Steam · 작업 불가'; $r.Lvl = 'bad'; continue }
+        if ($r.Already) { $r.Role = ''; $r.Tag = '이미 등록됨'; $r.Sub = '이미 링크 관리 목록에 있음'; continue }
+        if ($r.An.Exe -and -not $r.An.Ver) {
+            $why = Get-VersionWhy $r.An.Game
+            $r.Role = ''; $r.Tag = '미확인'; $r.Lvl = 'bad'; $r.Sub = ('버전 정보 확인 불가 · ' + $why); $r.NoPick = $true
+            $r.NoPickMsg = ("버전 정보를 확인할 수 없습니다 ({0}).`r`n`r`n확인할 파일:`r`n{1}" -f $why, (Join-Path $r.An.Game 'launcherDownloadConfig.json'))
+            continue
+        }
         $r.Role = 'link'; $r.Tag = '링크 대상'; $r.Sub = ''
-        if (-not $r.An.Exe) { $r.Sub = '구성 파일 없음 · 점검 필요' }
+        if (-not $r.An.Exe) {
+            # 클라이언트 파일이 없는 행: 이식/게임 복구가 필요한 상태는 보라색(링크 탐색의 이식 가능과 같은 계열)
+            if ($r.An.Seed) { $r.Tag = '이식 필요'; $r.Lvl = 'seed'; $r.Sub = '클라이언트 없음 · 링크 생성 탭에서 이식' }
+            elseif ($r.An.Part) { $r.Tag = '부분 복구 필요'; $r.Lvl = 'seed'; $r.Sub = '파일 일부만 있음 · 런처 [게임 복구] 진행' }
+            else {
+                # 런처도 게임 파일도 없는 행 (탐색 결과로는 나오지 않는 방어용 분기): 선택 불가
+                $r.Role = ''; $r.Tag = '클라이언트 없음'; $r.Lvl = 'bad'; $r.Sub = '런처와 게임 파일이 모두 없음'; $r.NoPick = $true
+                $r.NoPickMsg = ''
+            }
+        }
     }
     if ($hasSrc) {
         foreach ($r in $live) {
             if ($r.An.Exe) {
                 if ($srcGame -and ($r.An.LinkGames -contains $srcGame)) { $r.Sub = '이미 원본에 연결됨' } else { $r.Sub = '원본에 연결 가능' }
+                if ($srcGame -and -not $r.An.Linked -and ($r.An.LinkGames -notcontains $srcGame)) {
+                    try {
+                        $cv = Get-LinkCompat $srcGame $r.An.Game @('Paks', 'UHD')
+                        if ($cv.Level -eq 'unknown') { $r.Tag = '미확인'; $r.Sub = '등록된 원본의 버전 정보 확인 불가'; $r.Lvl = 'bad' }
+                        elseif ($cv.Level -eq 'minor') {
+                            $cau = Get-RegCaution $srcGame $r.An.Game
+                            if ($cau -and $cau.Tag -eq '업데이트 필요') { $r.Tag = '업데이트 필요'; $r.Sub = '런처 실행하여 업데이트'; $r.Lvl = 'minor'; $r.Caution = [string]$cau.Msg }
+                            else { $r.Tag = '링크 불가'; $r.Sub = '원본보다 최신 버전'; $r.Lvl = 'minor'; if ($cau) { $r.Caution = [string]$cau.Msg } }
+                        }
+                    } catch { }
+                }
             }
         }
         return
@@ -866,7 +1142,7 @@ function Set-RoleSuggestions($rows, [bool]$hasSrc, [string]$srcGame) {
         foreach ($r in $live) {
             if ($r.An.Exe -and $r.An.M -gt 0 -and $r.An.DirN -eq $r.An.M -and $r.An.Bytes -gt $best) { $srcRow = $r; $best = $r.An.Bytes }
         }
-        if ($srcRow) { $srcRow.Sub = '실제 폴더를 가진 클라이언트 중 가장 큼' }
+        if ($srcRow) { $srcRow.Sub = '클라이언트 중 가장 용량이 큼' }
     }
     if ($srcRow) { $srcRow.Role = 'src'; $srcRow.Tag = '원본 후보' }
     foreach ($r in $live) {
@@ -898,12 +1174,13 @@ function Find-SourceRow($rows, [string]$regSrcRoot) {
     return $null
 }
 
-# 1) 흔한 위치 (자동 감지)
-function Find-ClientsQuick {
+# 1) 흔한 위치 (자동 감지). $onlyRoots 를 주면 그 드라이브만 확인 (예: 'C:\', 'D:\')
+function Find-ClientsQuick([string[]]$onlyRoots = $null) {
     $found = New-Object System.Collections.Generic.List[string]
     $drives = @([IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady })
     foreach ($d in $drives) {
         $r = $d.RootDirectory.FullName
+        if ($null -ne $onlyRoots -and -not ($onlyRoots | Where-Object { $_ -ieq $r })) { continue }
         foreach ($sub in @('Wuthering Waves', 'Wuthering Waves Game', 'Program Files\Wuthering Waves', 'Program Files (x86)\Wuthering Waves',
                            'Games\Wuthering Waves', 'Game\Wuthering Waves', 'Games\Kuro Games\Wuthering Waves', '명조',
                            'Program Files\Epic Games\WutheringWavesj3oFh', 'Epic Games\WutheringWavesj3oFh', 'WutheringWavesj3oFh')) {
@@ -963,7 +1240,7 @@ function Find-ClientsSteam {
     return $found.ToArray()
 }
 
-# Steam 3.7 구조(launcher.exe 없이 설치 폴더 바로 아래에 Client 폴더가 있는 형태)도 찾아서 "구조 다름"으로 표시
+# 구버전 Steam 구조(launcher.exe 없이 설치 폴더 바로 아래에 Client 폴더가 있는 형태)도 찾아서 "구조 다름"으로 표시
 function Find-ClientsSteamFlat {
     $found = New-Object System.Collections.Generic.List[string]
     foreach ($lib in @(Find-SteamLibraries)) {
@@ -1197,8 +1474,15 @@ function Get-RoundPath([float]$x, [float]$y, [float]$w, [float]$h, [float]$r) {
     return $gp
 }
 
+# 카드 패널 목록: 카드는 바탕(회색)을 BackColor 로 두고 흰 면을 직접 그리므로, 위에 얹는 그림 컨트롤은 흰색으로 지워야 함
+$script:cardPanels = New-Object Collections.ArrayList
+function Get-FaceColor($c) {
+    if ($c.Parent -and $script:cardPanels.Contains($c.Parent)) { return $cCard }
+    return $c.Parent.BackColor
+}
 function New-Card {
     $p = New-Object Windows.Forms.Panel
+    $null = $script:cardPanels.Add($p)
     $p.BackColor = $cBg
     Set-DoubleBuffered $p
     $p.Add_Paint({
@@ -1239,7 +1523,7 @@ function New-NoteBox($parent, [string[]]$lines, [string]$icon, $accent, $unused1
     $p.Add_Paint({
         param($s, $e)
         $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'; $t = $s.Tag
-        $g.Clear($s.Parent.BackColor)
+        $g.Clear((Get-FaceColor $s))
         $gp = Get-RoundPath 0.5 0.5 ($s.Width - 2) ($s.Height - 2) (S 8)
         $g.SetClip($gp)
         $ab = New-Object Drawing.SolidBrush($t.Accent); $g.FillRectangle($ab, 0, 0, (S 5), $s.Height); $ab.Dispose()
@@ -1297,16 +1581,16 @@ function New-Toggle([string]$text, [bool]$on, [scriptblock]$cb, $parent) {
 
 function New-Pill([string]$text, $color, $parent) {
     $p = New-Object Windows.Forms.Panel
-    $p.BackColor = $parent.BackColor
+    $p.BackColor = $cCard; if (-not $script:cardPanels.Contains($parent)) { $p.BackColor = $parent.BackColor }
     Set-DoubleBuffered $p
     $p.Tag = @{ Text = $text; Color = $color }
     $p.Add_Paint({
         param($s, $e)
         $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'; $t = $s.Tag
-        $g.Clear($s.Parent.BackColor)
+        $g.Clear((Get-FaceColor $s))
         $gp = Get-RoundPath 0.5 0.5 ($s.Width - 1) ($s.Height - 1) ([float]($s.Height / 2))
         $br = New-Object Drawing.SolidBrush($t.Color); $g.FillPath($br, $gp); $br.Dispose(); $gp.Dispose()
-        [Windows.Forms.TextRenderer]::DrawText($g, $t.Text, $fontSmall, (New-Object Drawing.Rectangle(0, 0, $s.Width, $s.Height)), [Drawing.Color]::White, [Windows.Forms.TextFormatFlags]'HorizontalCenter,VerticalCenter,SingleLine')
+        [Windows.Forms.TextRenderer]::DrawText($g, $t.Text, $fontSmall, (New-Object Drawing.Rectangle(1, 0, $s.Width, $s.Height)), [Drawing.Color]::White, [Windows.Forms.TextFormatFlags]'HorizontalCenter,VerticalCenter,SingleLine,NoPadding')
     })
     $parent.Controls.Add($p)
     return $p
@@ -1485,14 +1769,15 @@ foreach ($side in 'src', 'dst') {
             $r2 = New-Object Drawing.Rectangle((S 12), ($s.Height - (S 44)), ($s.Width - (S 24)), (S 30))
             [Windows.Forms.TextRenderer]::DrawText($g, '또는 클릭해서 폴더 선택  (' + $tag.Label + ' 런처의 설치 폴더)', $fontSmall, $r2, $cSub, [Windows.Forms.TextFormatFlags]'HorizontalCenter,VerticalCenter,SingleLine')
         } else {
-            $y0 = S 12; $lh = S 28
+            $y0 = S 12; $lh = S 26
             foreach ($ln in $inf.Lines) {
                 $rr = New-Object Drawing.Rectangle((S 14), $y0, ($s.Width - (S 28)), $lh)
                 [Windows.Forms.TextRenderer]::DrawText($g, $ln.Text, $fontBold, $rr, $ln.Color, [Windows.Forms.TextFormatFlags]'HorizontalCenter,VerticalCenter,SingleLine')
                 $y0 += $lh
             }
-            $r2 = New-Object Drawing.Rectangle((S 14), ($y0 + (S 8)), ($s.Width - (S 28)), [Math]::Max((S 24), $s.Height - $y0 - (S 20)))
-            [Windows.Forms.TextRenderer]::DrawText($g, $inf.Text, $fontPath, $r2, $cText, [Windows.Forms.TextFormatFlags]'HorizontalCenter,Top,WordBreak')
+            $r2 = New-Object Drawing.Rectangle((S 14), ($y0 + (S 4)), ($s.Width - (S 28)), [Math]::Max((S 24), $s.Height - $y0 - (S 10)))
+            $wpt = Get-WrappedPath ([string]$inf.Text) $fontPath ($s.Width - (S 32)) 3
+            [Windows.Forms.TextRenderer]::DrawText($g, $wpt, $fontPath, $r2, $cText, [Windows.Forms.TextFormatFlags]'HorizontalCenter,Top')
         }
     })
 }
@@ -1549,19 +1834,44 @@ function Update-Info([string]$side) {
     $st = Get-State $p
     if (-not $st) { $script:info[$side] = @{ Text = $p; Lines = @(@{ Text = '!  올바른 경로가 아닙니다'; Color = $cDanger }) }; return }
     $lines = @()
-    if ($st.Launcher) { $lines += @{ Text = '✔  런처 확인됨'; Color = $cOk } }
+    $kdn = Get-ClientKind $st.Root
+    if ($st.Launcher) { $lt = '✔  런처 확인됨'; if ($kdn) { $lt += ' (' + $kdn + ')' }; $lines += @{ Text = $lt; Color = $cOk } }
     elseif ($side -eq 'dst') { $lines += @{ Text = '!  런처 없음 (launcher.exe 없음)'; Color = $cDanger } }
     else { $lines += @{ Text = '–  런처 없음 (launcher.exe 없음)'; Color = $cSub } }
     if ($side -eq 'src') {
         $lk = @(Get-LinkedFixed $st.Game)
-        if ($st.Exe -and $lk.Count -gt 0) { $lines += @{ Text = '✖  구성 파일 없음 (링크 상태)'; Color = $cDanger } }
+        if ($st.Exe -and $lk.Count -gt 0) { $lines += @{ Text = '✔  구성 파일 없음 · 링크 연결됨 (원본 불가)'; Color = (RGB 0 122 140) } }
+        elseif ($st.Exe -and -not (Get-ClientVersion $st.Game)) { $lines += @{ Text = ('!  미확인 · 버전 정보 확인 불가 ({0})' -f (Get-VersionWhy $st.Game)); Color = $cDanger } }
         elseif ($st.Exe) { $lines += @{ Text = '✔  구성 파일 확인됨 · 링크 원본 가능'; Color = $cOk } }
-        else { $lines += @{ Text = '!  구성 파일 없음'; Color = $cDanger } }
+        else { $lines += @{ Text = '!  클라이언트 없음'; Color = $cDanger } }
     } else {
         $lk = @(Get-LinkedFixed $st.Game)
-        if ($st.Exe -and $lk.Count -gt 0) { $lines += @{ Text = '✖  구성 파일 없음 · 링크 상태'; Color = $cDanger } }
+        if ($st.Seedable) { $lines += @{ Text = '＋  클라이언트 없음 · 이식 가능'; Color = $cAccent } }
+        elseif ($st.Partial) { $lines += @{ Text = '＋  클라이언트 없음 · 부분 복구 필요'; Color = $cAccent } }
+        elseif ($st.Exe -and $lk.Count -gt 0) { $lines += @{ Text = '✔  구성 파일 없음 · 링크 연결됨 (추가 연결 가능)'; Color = (RGB 0 122 140) } }
         elseif ($st.Exe) { $lines += @{ Text = '✔  구성 파일 있음 · 링크 가능'; Color = $cOk } }
-        else { $lines += @{ Text = '!  구성 파일 없음 · 링크 불가'; Color = $cDanger } }
+        else { $lines += @{ Text = '!  클라이언트 없음 · 링크 불가'; Color = $cDanger } }
+    }
+    if ($side -eq 'dst') {
+        $script:verBlock = $false
+        $vp = $script:paths.src
+        if ($vp -and $st.Exe) {
+            $vs = Get-State $vp
+            if ($vs -and $vs.Exe) {
+                $vcv = Get-LinkCompat $vs.Game $st.Game @('Paks', 'UHD')
+                if ($vcv.Level -eq 'minor') {
+                    $script:verBlock = $true
+                    $sv1 = Get-ClientVersion $vs.Game; $dv1 = Get-ClientVersion $st.Game
+                    $hint = '업데이트 필요'
+                    if ($sv1 -and $dv1) { if (([version]$dv1.Content) -gt ([version]$sv1.Content)) { $hint = '원본 업데이트 필요 · 원본 런처 실행하여 업데이트' } else { $hint = '런처 실행하여 업데이트' } }
+                    $lines += @{ Text = ('✖  {0} · {1}' -f ($vcv.Line -replace '^\S+\s+', ''), $hint); Color = $cDanger }
+                } elseif ($vcv.Level -eq 'unknown') {
+                    $script:verBlock = $true
+                    if (-not (Get-ClientVersion $vs.Game)) { $lines += @{ Text = ('✖  미확인 · 원본의 버전 정보 확인 불가 ({0})' -f (Get-VersionWhy $vs.Game)); Color = $cDanger } }
+                    else { $lines += @{ Text = ('✖  미확인 · 버전 정보 확인 불가 ({0})' -f (Get-VersionWhy $st.Game)); Color = $cDanger } }
+                }
+            }
+        }
     }
     $script:info[$side] = @{ Text = $st.Root; Lines = $lines }
 }
@@ -1576,7 +1886,7 @@ foreach ($it in $Items) {
     $c = New-Check $it.Label $it.Fixed { Reset-Preview } $cardOpt
     if ($it.Fixed) { $c.Enabled = $false }
     $st = New-Text '' $fontSmall $cSub $cardOpt
-    $st.TextAlign = 'MiddleLeft'
+    $st.TextAlign = 'MiddleLeft'; $st.AutoEllipsis = $true
     $rowCtl[$it.Key] = @{ Check = $c; Status = $st }
 }
 $divider = New-Object Windows.Forms.Panel
@@ -1584,6 +1894,86 @@ $divider.BackColor = $cBorder
 $cardOpt.Controls.Add($divider)
 $boxInfo = New-NoteBox $cardOpt @('런처 실행 후 [게임 복구]까지 추가로 다운받는 항목이 없으면 정상적으로 링크가 진행된 것입니다.', '대상에서 정상적으로 클라이언트 실행 및 게임 진행이 되는 것을 확인 후 [백업 삭제]로 정리하세요.') 'ⓘ' $cAccent (New-Object Drawing.Color) $null
 $boxWarn = New-NoteBox $cardOpt @('원본의 연결 폴더를 지우거나 옮기면 링크가 깨집니다.', '연결 폴더는 모든 원본, 링크에서 공유됩니다. 임의로 수정하지 마세요.') '⚠' $cDanger (New-Object Drawing.Color) $null
+
+# ---- 새 클라이언트 설정 (대상이 '런처만 있고 구성 파일 없음'일 때만 표시)
+$SeedTypes = @(
+    @{ Name = '공식'; Id = '50004' },
+    @{ Name = '구글';        Id = '50009' },
+    @{ Name = '에픽';        Id = '50003' },
+    @{ Name = '스팀';        Id = '50019' }
+)
+$cSeedBg = [Drawing.Color]::FromArgb(246, 243, 252)
+$seedBox = New-Object Windows.Forms.Panel
+$seedBox.BackColor = $cCard; $seedBox.Visible = $false
+Set-DoubleBuffered $seedBox
+$seedBox.Add_Paint({
+    param($s, $e)
+    $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'
+    $gp = Get-RoundPath 0.5 0.5 ($s.Width - 2) ($s.Height - 2) (S 8)
+    $br = New-Object Drawing.SolidBrush($cSeedBg)
+    $pen = New-Object Drawing.Pen([Drawing.Color]::FromArgb(205, 190, 232), 1)
+    $g.FillPath($br, $gp); $g.DrawPath($pen, $gp); $br.Dispose(); $pen.Dispose(); $gp.Dispose()
+})
+$cardOpt.Controls.Add($seedBox)
+$lblSeedTitle = New-Text '클라이언트 이식 설정' $fontBold ([Drawing.Color]::FromArgb(110, 66, 176)) $seedBox
+# 줄 간격을 넓히기 위해 줄마다 라벨을 따로 둔다 (Label 은 줄 간격 설정이 없음)
+$seedDescL = @(); $seedNoteL = @()
+foreach ($tx in @('클라이언트를 런처에 설치 상태로 인식시킵니다.', '런처의 종류를 아래에서 선택하세요.')) { $x = New-Text $tx $fontSmall $cSub $seedBox; $x.BackColor = $cSeedBg; $seedDescL += $x }
+foreach ($tx in @()) { $x = New-Text $tx $fontSmall $cSub $seedBox; $x.BackColor = $cSeedBg; $seedNoteL += $x }
+$lblSeedTitle.BackColor = $cSeedBg
+$cmbSeed = New-Object Windows.Forms.ComboBox
+$cmbSeed.DropDownStyle = 'DropDownList'; $cmbSeed.Font = $fontBase; $cmbSeed.FlatStyle = 'Flat'
+[void]$cmbSeed.Items.Add('클라이언트 종류 선택')
+foreach ($t in $SeedTypes) { [void]$cmbSeed.Items.Add(('{0}  ·  앱 ID {1}' -f $t.Name, $t.Id)) }
+$cmbSeed.SelectedIndex = 0
+$cmbSeed.Visible = $false
+$seedBox.Controls.Add($cmbSeed)
+# 원본의 게임 기록(LocalStorage.db) 복사: 완료 임무 목록이 없으면 첫 실행 때 지난 임무 영상을 모두 받기 때문
+$chkSeedDb = New-Check '원본 DB 복사 (기본값 : 선택)' $true $null $seedBox
+$chkSeedDb.BackColor = $cSeedBg
+$lblSeedDb = New-Text '·  원본의 게임 사용자 설정을 복사' $fontSmall $cSub $seedBox
+$lblSeedDb.BackColor = $cSeedBg
+$lblSeedDb2 = New-Text '·  영상 리소스 강제 다운로드 방지' $fontSmall $cSub $seedBox
+$lblSeedDb2.BackColor = $cSeedBg
+# 종류 선택 타일 (선택 상태는 $cmbSeed.SelectedIndex 에 보관)
+$seedTiles = @()
+for ($i = 1; $i -le 4; $i++) {
+    $tl = New-Object Windows.Forms.Panel
+    $tl.BackColor = $cSeedBg; $tl.Cursor = 'Hand'
+    Set-DoubleBuffered $tl
+    $tl.Tag = @{ Idx = $i }
+    $tl.Add_Paint({
+        param($s, $e)
+        $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'
+        $idx = [int]$s.Tag.Idx
+        $on = ($cmbSeed.SelectedIndex -eq $idx)
+        $en = $cmbSeed.Enabled
+        $gp = Get-RoundPath 0.5 0.5 ($s.Width - 2) ($s.Height - 2) (S 6)
+        if ($on) { $fillC = [Drawing.Color]::FromArgb(124, 77, 190); $lineC = $fillC; $c1 = [Drawing.Color]::White; $c2 = [Drawing.Color]::FromArgb(230, 220, 247) }
+        else { $fillC = [Drawing.Color]::White; $lineC = [Drawing.Color]::FromArgb(205, 190, 232); $c1 = $cText; $c2 = $cSub }
+        if (-not $en -and -not $on) { $c1 = [Drawing.Color]::FromArgb(150, 150, 150) }
+        $br = New-Object Drawing.SolidBrush($fillC); $pen = New-Object Drawing.Pen($lineC, 1)
+        $g.FillPath($br, $gp); $g.DrawPath($pen, $gp); $br.Dispose(); $pen.Dispose(); $gp.Dispose()
+        $t = $script:SeedTypes[$idx - 1]
+        [Windows.Forms.TextRenderer]::DrawText($g, [string]$t.Name, $fontBold, (New-Object Drawing.Rectangle(1, 1, $s.Width, ($s.Height - 1))), $c1, [Windows.Forms.TextFormatFlags]'HorizontalCenter,VerticalCenter,SingleLine,NoPadding')
+    })
+    $tl.Add_Click({
+        param($s, $e)
+        if (-not $cmbSeed.Enabled -or $script:busy) { return }
+        $ix = [int]$s.Tag.Idx
+        if ($script:seedPartialGame) { Invoke-SeedAppId $ix } else { $cmbSeed.SelectedIndex = $ix }
+    })
+    $seedBox.Controls.Add($tl)
+    $seedTiles += $tl
+}
+$cmbSeed.Add_SelectedIndexChanged({ foreach ($t in $seedTiles) { $t.Invalidate() } })
+$cmbSeed.Add_EnabledChanged({ foreach ($t in $seedTiles) { $t.Invalidate() } })
+$script:launched = $false
+$script:linkPending = ''
+$script:seedPartialGame = ''
+$script:seedFor = ''
+$script:seedPending = ''
+$script:seedDbAvail = $false
 
 # ---------------------------------------------------------------- 실행 영역
 
@@ -1647,7 +2037,7 @@ function Do-Layout {
 
     if ($script:tab -eq 'create') {
         $colW = [int](($cw - $gap) / 2)
-        $colH = S 216
+        $colH = S 226
         $cardSrc.SetBounds($m, $y, $colW, $colH)
         $cardDst.SetBounds(($m + $colW + $gap), $y, $colW, $colH)
         $lblArrow.SetBounds(($m + $colW), ($y + [int]($colH / 2) - (S 20)), $gap, (S 40))
@@ -1664,18 +2054,31 @@ function Do-Layout {
         $iw = $cw - (S 32); $rowH = S 30
         $lblOptTitle.SetBounds((S 16), (S 12), $iw, (S 26))
         $yy = S 46
+        $boxW = S 360; $boxX = $cw - (S 16) - $boxW
+        $stX = S 330; $stW = $cw - (S 346); $ckW = S 300; $qW = $iw
+        if ($seedBox.Visible) { $stX = S 270; $stW = $boxX - (S 12) - $stX; $ckW = S 250; $qW = $boxX - (S 16) - (S 8) }
         foreach ($key in 'Paks', 'Resources') {
-            $rowCtl[$key].Check.SetBounds((S 16), $yy, (S 300), $rowH)
-            $rowCtl[$key].Status.SetBounds((S 330), $yy, ($cw - (S 346)), $rowH)
+            $rowCtl[$key].Check.SetBounds((S 16), $yy, $ckW, $rowH)
+            $rowCtl[$key].Status.SetBounds($stX, $yy, $stW, $rowH)
             $yy += $rowH
         }
         $yy += (S 8)
-        $lblQ.SetBounds((S 16), $yy, $iw, (S 24)); $yy += (S 30)
+        $lblQ.SetBounds((S 16), $yy, $qW, (S 24)); $yy += (S 30)
         foreach ($key in 'UHD', 'HD', 'SD') {
-            $rowCtl[$key].Check.SetBounds((S 16), $yy, (S 300), $rowH)
-            $rowCtl[$key].Status.SetBounds((S 330), $yy, ($cw - (S 346)), $rowH)
+            $rowCtl[$key].Check.SetBounds((S 16), $yy, $ckW, $rowH)
+            $rowCtl[$key].Status.SetBounds($stX, $yy, $stW, $rowH)
             $yy += $rowH
         }
+        $sbH = $yy - (S 12)
+        $seedBox.SetBounds($boxX, (S 12), $boxW, $sbH)
+        $seedBox.BringToFront()
+        $inW = $boxW - (S 28); $tg = S 8; $tw = [int](($inW - 3 * $tg) / 4)
+        $lblSeedTitle.SetBounds((S 14), (S 10), $inW, (S 26))
+        for ($i = 0; $i -lt 2; $i++) { $seedDescL[$i].SetBounds((S 14), ((S 40) + $i * (S 23)), $inW, (S 22)) }
+        for ($i = 0; $i -lt 4; $i++) { $seedTiles[$i].SetBounds(((S 14) + $i * ($tw + $tg)), (S 94), $tw, (S 36)) }
+        $chkSeedDb.SetBounds((S 12), (S 140), $inW, (S 28))
+        $lblSeedDb.SetBounds((S 44), (S 168), ($inW - (S 30)), (S 22))
+        $lblSeedDb2.SetBounds((S 44), (S 190), ($inW - (S 30)), (S 22))
         $yy += (S 10)
         $divider.SetBounds((S 16), $yy, $iw, 1)
         $yy += (S 14)
@@ -1742,9 +2145,12 @@ function Do-Layout {
 
 function Update-Rows {
     $ss = $null; $ds = $null
+    # 원본/대상 박스의 상태 문구도 매번 다시 확인 (복구 후 구성 파일이 생기는 등 외부 변화 반영)
+    foreach ($sd0 in 'src', 'dst') { if ($script:paths[$sd0]) { Update-Info $sd0; $sides[$sd0].Box.Invalidate() } }
     if ($script:paths.src) { $ss = Get-State $script:paths.src }
     if ($script:paths.dst) { $ds = Get-State $script:paths.dst }
     $anyBak = $false; $anyLink = $false
+    $cp = [bool]($ds -and ($ds.Seedable -or $ds.Partial))   # 이식 박스가 보이면 폭이 좁아 문구를 줄여서 표시
     foreach ($it in $Items) {
         $r = $rowCtl[$it.Key]
         $srcInfo = $null
@@ -1759,22 +2165,36 @@ function Update-Rows {
         $txt = ''; $col = $cSub
         if (-not $ss) { $txt = '원본 경로를 지정하세요' }
         elseif (-not $srcOk) {
-            if ($srcInfo.Kind -eq 'link') { $txt = '원본이 이미 링크입니다 (원본으로 쓸 수 없음)' } else { $txt = '원본에 없음' }
+            if ($srcInfo.Kind -eq 'link') { if ($cp) { $txt = '원본이 링크 상태' } else { $txt = '원본이 이미 링크입니다 (원본으로 쓸 수 없음)' } } else { $txt = '원본에 없음' }
             if ($it.Fixed) { $col = $cDanger }
         } else {
             $txt = '원본: 있음'; $col = $cOk
+            if ($cp) { $txt = '원본' }
             try { $gs = Get-DirStat (Join-Path $ss.Game $it.Sub); $txt += ' (' + (Format-Size $gs.Bytes) + ')' } catch { }
         }
         if ($ds) {
             $di = Get-LinkInfo (Join-Path $ds.Game $it.Sub)
             switch ($di.Kind) {
-                'none' { $txt += '  ·  대상: 없음 → 링크 생성' }
-                'dir'  { $txt += '  ·  대상: 실제 폴더 → 백업 후 링크' }
+                'none' { if ($cp) { $txt += '  ·  링크 가능' } else { $txt += '  ·  대상: 없음 → 링크 가능' } }
+                'dir'  {
+                    if (Test-DirEmpty (Join-Path $ds.Game $it.Sub)) { if ($cp) { $txt += '  ·  빈 폴더 → 링크 가능' } else { $txt += '  ·  대상: 빈 폴더 → 링크 가능' } }
+                    else {
+                        $cm = ''
+                        if ($srcOk) {
+                            try {
+                                $dc = Get-DirCompare (Join-Path $ss.Game $it.Sub) (Join-Path $ds.Game $it.Sub)
+                                if ($dc.Status -eq 'same') { $cm = '원본과 동일' } elseif ($dc.Status -eq 'subset') { $cm = '원본의 일부' } elseif ($dc.Status -eq 'differs') { $cm = '원본과 다름' }
+                            } catch { }
+                        }
+                        if ($cp) { if ($cm) { $txt += '  ·  링크 가능 (백업 후, ' + $cm + ')' } else { $txt += '  ·  링크 가능 (백업 후)' } }
+                        else { if ($cm) { $txt += '  ·  대상: 실제 폴더 (' + $cm + ') → 링크 가능 (백업 후)' } else { $txt += '  ·  대상: 실제 폴더 → 링크 가능 (백업 후)' } }
+                    }
+                }
                 'file' { $txt += '  ·  대상: 파일이 있음 (링크 불가)'; $col = $cDanger }
                 'link' {
                     $anyLink = $true
-                    if ($srcOk -and ((Get-NormPath $di.Target) -ieq (Get-NormPath (Join-Path $ss.Game $it.Sub)))) { $txt += '  ·  대상: 이미 연결됨' }
-                    else { $txt += '  ·  대상: 다른 경로로 링크됨 (재연결)' }
+                    if ($srcOk -and ((Get-NormPath $di.Target) -ieq (Get-NormPath (Join-Path $ss.Game $it.Sub)))) { if ($cp) { $txt += '  ·  이미 연결됨' } else { $txt += '  ·  대상: 이미 연결됨' } }
+                    else { if ($cp) { $txt += '  ·  재연결 가능' } else { $txt += '  ·  대상: 다른 경로로 링크됨 (재연결 가능)' } }
                 }
             }
             $nb = (Get-ItemBackups $ds.Game $it).Count
@@ -1783,13 +2203,56 @@ function Update-Rows {
         $r.Status.Text = $txt; $r.Status.ForeColor = $col
     }
     $script:resetChecks = $false
-    if (-not $anyBak) { $script:ok2 = $false }
+    if ($ds -and $ds.Partial) { $script:seedPending = $ds.Root }
+    $pend = [bool]($script:seedPending -and $ds -and ((Get-NormPath $ds.Root) -ieq (Get-NormPath $script:seedPending)))
+    if (-not $pend) { $script:seedPending = '' }
+    $lpend = [bool]($script:linkPending -and $ds -and ((Get-NormPath $ds.Root) -ieq (Get-NormPath $script:linkPending)))
+    if (-not $lpend) { $script:linkPending = '' }
+    $pend = ($pend -or $lpend)
+    $isPart = [bool]($ds -and $ds.Partial)
+    if ($isPart) { $script:seedPartialGame = $ds.Game } else { $script:seedPartialGame = '' }
+    $showSeed = [bool]($ds -and ($ds.Seedable -or $ds.Partial))
+    if ($showSeed -ne $seedBox.Visible) { $seedBox.Visible = $showSeed; Do-Layout }
+    if ($showSeed -and $script:seedFor -ne ($ds.Root + '|' + $isPart)) {
+        $script:seedFor = $ds.Root + '|' + $isPart
+        if ($isPart) {
+            # 이미 이식 설정이 적용된 상태: 설정 파일의 앱 ID로 종류를 표시 (변경 불가)
+            $gi = 0
+            try {
+                $jf = Join-Path $ds.Game 'launcherDownloadConfig.json'
+                if (Test-Path -LiteralPath $jf -PathType Leaf) {
+                    $aid = [string](((Read-JsonText $jf).Text | ConvertFrom-Json).appId)
+                    for ($k = 0; $k -lt $SeedTypes.Count; $k++) { if ([string]$SeedTypes[$k].Id -eq $aid) { $gi = $k + 1; break } }
+                }
+            } catch { }
+            $cmbSeed.SelectedIndex = $gi
+            $seedDescL[0].Text = '설정 파일과 링크가 적용되었습니다.'
+            $seedDescL[1].Text = '종류를 바꾸려면 다른 항목을 누르세요.'
+        } else {
+            $cmbSeed.SelectedIndex = (Get-SeedGuess $ds.Root)
+            $chkSeedDb.Tag.On = $true
+            $seedDescL[0].Text = '클라이언트를 런처에 설치 상태로 인식시킵니다.'
+            if (Get-KRKindConf $ds.Root) { $seedDescL[1].Text = '런처 설정에서 종류를 확인해 선택했습니다.' } else { $seedDescL[1].Text = '런처의 종류를 아래에서 선택하세요.' }
+        }
+    }
+    if (-not $anyBak -and -not $pend) { $script:ok2 = $false }
+    if (-not $anyBak -and -not $pend) { $script:launched = $false }
+    if ($showSeed) {
+        $sdb = $false; if ($ss) { $sdb = Test-Path -LiteralPath (Get-SeedDbPath $ss.Game) -PathType Leaf }
+        if ($isPart) { $lblSeedDb.Text = '·  이식 설정이 이미 적용됨'; $lblSeedDb2.Text = '' }
+        elseif (-not $sdb) { $lblSeedDb.Text = '·  원본에 DB 파일이 없어 복사할 수 없음'; $lblSeedDb2.Text = ''; $chkSeedDb.Tag.On = $false }
+        else { $lblSeedDb.Text = '·  원본의 게임 사용자 설정을 복사'; $lblSeedDb2.Text = '·  영상 리소스 강제 다운로드 방지' }
+        $script:seedDbAvail = ($sdb -and -not $isPart)
+        $chkSeedDb.Enabled = ($script:seedDbAvail -and -not $script:busy)
+        $chkSeedDb.Invalidate()
+    }
     if (-not $script:busy) {
-        $btnRun.Enabled = [bool]($script:paths.src -and $script:paths.dst)
-        $btnPrev.Enabled = ($anyBak -and -not $script:ok2)
-        if ($script:ok2) { $btnPrev.Text = '확인 완료' } else { $btnPrev.Text = '런처 실행 › 게임 복구 › 게임 실행' }
+        $cmbSeed.Enabled = $true
+        $btnRun.Enabled = [bool]($script:paths.src -and $script:paths.dst -and -not $script:verBlock)
+        $btnPrev.Enabled = (($anyBak -or $pend) -and -not $script:ok2)
+        if ($script:ok2) { $btnPrev.Text = '확인 완료' } elseif ($script:launched) { $btnPrev.Text = '게임 복구 · 게임 실행 확인 완료' } else { $btnPrev.Text = '런처 실행 › 게임 복구 › 게임 실행' }
         $btnPrev.Invalidate()
-        if ($btnPrev.Enabled) { $lblCap2.Text = '( 직접 진행 후 정상이면 눌러주세요 )' } else { $lblCap2.Text = '' }
+        if (-not $btnPrev.Enabled) { $lblCap2.Text = '' } elseif ($script:launched) { $lblCap2.Text = '( 런처에서 진행 후 정상이면 눌러주세요 )' } else { $lblCap2.Text = '( 눌러서 대상 런처를 실행합니다 )' }
         $btnClean.Enabled = ($anyBak -and $script:ok2)
         $btnUndo.Enabled = (@($script:undoStack).Count -gt 0)
     }
@@ -1802,20 +2265,31 @@ function Set-Side([string]$side, [string]$p) {
     $p = $p.Trim().Trim('"')
     if (Test-Path -LiteralPath $p -PathType Leaf) { $p = Split-Path $p -Parent }
     $script:paths[$side] = $p
-    if ($side -eq 'src') { $script:resetChecks = $true }
+    $script:cmpCache = @{}
+    if ($side -eq 'src') { $script:resetChecks = $true } else { $script:launched = $false; $script:ok2 = $false }
     Update-Info $side
     $sides[$side].Box.Invalidate()
     Update-Rows
     Reset-Preview
     $lblStatus.Text = '준비되면 [링크 실행]을 눌러 주세요.'
+    if ($side -eq 'dst') {
+        $st = Get-State $p
+        if ($st -and $st.Seedable) {
+            $m = "대상 런처에는 클라이언트 파일이 없습니다.`r`n원본 클라이언트를 기반으로 이식·링크할 수 있습니다."
+            if (-not $script:paths.src) { $m += "`r`n`r`n(원본 경로를 먼저 지정해 주세요.)" }
+            [void][Windows.Forms.MessageBox]::Show($m, '클라이언트 이식 설정', 'OK', 'Information')
+        }
+    }
 }
 
 function Set-Busy([bool]$b) {
     $script:busy = $b
     foreach ($c in @($btnPrev, $btnRun, $btnUndo, $btnClean)) { $c.Enabled = -not $b }
     foreach ($side in 'src', 'dst') { $sides[$side].Btn.Enabled = -not $b }
+    $cmbSeed.Enabled = -not $b
+    if ($b) { $chkSeedDb.Enabled = $false }
     foreach ($it in $Items) { if (-not $it.Fixed) { if ($b) { $rowCtl[$it.Key].Check.Enabled = $false } } }
-    if (-not $b) { Update-Rows }
+    if (-not $b) { $script:cmpCache = @{}; Update-Rows }
     foreach ($c in @($mBtnConn, $mBtnDisc, $mBtnRef, $mBtnBroken, $mBtnClean, $mBtnSync)) { if ($b) { $c.Enabled = $false } }
     if (-not $b) { $mBtnRef.Enabled = $true; $mBtnSync.Enabled = $true; if ($script:grid) { Update-ManageUi } }
 }
@@ -1895,15 +2369,341 @@ function Test-Safety([bool]$needSymlink) {
     if (-not $ss -or -not $ds) { return '원본과 대상 경로를 모두 지정해 주세요.' }
     $keys = @(Get-SelectedKeys)
     if ($keys.Count -eq 0) { return '연결할 폴더를 하나 이상 선택해 주세요.' }
-    return (Test-LinkSafety $ss @(@{ Name = ''; Path = $ds.Root; Ds = $ds; Keys = $keys; Plan = $null }) $needSymlink)
+    $seed = [bool]$ds.Seedable
+    if ($seed) {
+        if ($cmbSeed.SelectedIndex -lt 1) { return '클라이언트 종류(공식 / 구글 / 에픽 / 스팀)를 선택해 주세요.' }
+        $nq = @($keys | Where-Object { -not (Get-ItemByKey $_).Fixed }).Count
+        if ($nq -eq 0) { return '품질 리소스(UHD / HD / SD)를 하나 이상 선택해 주세요. 클라이언트 이식 설정에는 최소 하나가 필요합니다.' }
+        if ($ss.Exe) {
+            $sp = Get-SeedSpec $ss.Game $ds.Game $keys ([string]$SeedTypes[$cmbSeed.SelectedIndex - 1].Id)
+            if ($sp.Error) { return $sp.Error }
+        }
+    }
+    return (Test-LinkSafety $ss @(@{ Name = ''; Path = $ds.Root; Ds = $ds; Keys = $keys; Plan = $null; Seed = $seed }) $needSymlink)
+}
+
+# ---------------------------------------------------------------- 클라이언트 이식 설정 (런처 구성 파일 만들기)
+
+# 경로·등록 이름으로 클라이언트 종류 추측 (콤보 인덱스: 0 = 선택 안 함, 1 쿠로 · 2 구글 · 3 에픽 · 4 스팀)
+function Get-SeedGuess([string]$root) {
+    $n = Get-NormPath $root
+    $kc = Get-KRKindConf $root
+    for ($ki = 0; $ki -lt $script:KRKinds.Count; $ki++) { if ($script:KRKinds[$ki].Name -eq $kc) { return ($ki + 1) } }
+    $kd0 = Get-ClientKind $root
+    for ($ki = 0; $ki -lt $script:KRKinds.Count; $ki++) { if ($script:KRKinds[$ki].Name -eq $kd0) { return ($ki + 1) } }
+    foreach ($c in $script:clients) {
+        if ((Get-NormPath $c.Path) -ieq $n) {
+            $nm = [string]$c.Name
+            if ($nm -match '구글|google') { return 2 }
+            if ($nm -match '에픽|epic') { return 3 }
+            if ($nm -match '스팀|steam') { return 4 }
+            if ($nm -match '쿠로|공식|kuro') { return 1 }
+        }
+    }
+    if ($n -match 'epic') { return 3 }
+    if ($n -match 'steam') { return 4 }
+    if ($n -match 'google|구글') { return 2 }
+    return 0
+}
+
+# 원본 설정에서 대상에 만들 파일 내용을 계산. 반환: @{ Error; Version; Files = @(@{ Path; Text; Name }) }
+function Get-SeedSpec([string]$srcGame, [string]$dstGame, [string[]]$keys, [string]$appId) {
+    $r = @{ Error = $null; Version = $null; Files = @() }
+    if ($appId -notmatch '^\d+$') { $r.Error = '앱 ID가 올바르지 않습니다.'; return $r }
+    $f = Join-Path $srcGame 'launcherDownloadConfig.json'
+    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { $r.Error = "원본에 launcherDownloadConfig.json이 없습니다:`r`n" + $f; return $r }
+    try { $j = (Read-JsonText $f).Text | ConvertFrom-Json } catch { $r.Error = "원본 launcherDownloadConfig.json을 읽을 수 없습니다:`r`n" + $f; return $r }
+    $base = [string]$j.version
+    if ($base -notmatch '^\d+\.\d+(\.\d+)?$') { $r.Error = '원본 설정 파일의 version 값을 확인할 수 없습니다.'; return $r }
+    $bj = @(); $packs = [ordered]@{}; $max = $null
+    foreach ($q in 'UHD', 'HD', 'SD') {
+        if ($keys -notcontains $q) { continue }
+        $b = $null; if ($j.bundles) { $b = $j.bundles.PSObject.Properties[$q] }
+        if (-not $b) { $r.Error = "원본 설정 파일에 $q 번들 정보가 없어 $q 를 설정할 수 없습니다. 해당 품질 체크를 해제하세요."; return $r }
+        $v = [string]$b.Value.version
+        if ($v -notmatch '^\d+\.\d+(\.\d+)?$') { $r.Error = "원본 설정 파일의 $q 번들 버전을 확인할 수 없습니다."; return $r }
+        $rp = @(); foreach ($x in @($b.Value.resourcePacks)) { if ([string]$x -match '^[A-Za-z0-9_]+$') { $rp += [string]$x } }
+        if ($rp.Count -eq 0) { $rp = @('common', $q.ToLowerInvariant()) }
+        $bj += ('"{0}":{{"version":"{1}","state":"","resourcePacks":[{2}]}}' -f $q, $v, (($rp | ForEach-Object { '"' + $_ + '"' }) -join ','))
+        foreach ($x in $rp) { if (-not $packs.Contains($x)) { $packs[$x] = $v } }
+        if (-not $max -or ([version]$v) -gt ([version]$max)) { $max = $v }
+    }
+    if ($bj.Count -eq 0) { $r.Error = '품질 리소스를 하나 이상 선택해 주세요.'; return $r }
+    $r.Version = $max
+    $text = '{{"appId":"{0}","version":"{1}","state":"","bundles":{{{2}}}}}' -f $appId, $base, ($bj -join ',')
+    $r.Files += @{ Path = (Join-Path $dstGame 'launcherDownloadConfig.json'); Text = $text; Name = 'launcherDownloadConfig.json' }
+    foreach ($pk in @($packs.Keys)) {
+        $pv = [string]$packs[$pk]
+        $pf = Join-Path $srcGame ('launcherDownloadConfig\' + $pk + '.json')
+        if (Test-Path -LiteralPath $pf -PathType Leaf) {
+            try { $sv = [string]((Read-JsonText $pf).Text | ConvertFrom-Json).version; if ($sv -match '^\d+\.\d+(\.\d+)?$') { $pv = $sv } } catch { }
+        }
+        $r.Files += @{ Path = (Join-Path $dstGame ('launcherDownloadConfig\' + $pk + '.json')); Text = ('{{"packName":"{0}","version":"{1}"}}' -f $pk, $pv); Name = ($pk + '.json') }
+    }
+    foreach ($fl in $r.Files) { if (Test-Path -LiteralPath $fl.Path) { $r.Error = "대상에 이미 설정 파일이 있습니다:`r`n" + $fl.Path; return $r } }
+    return $r
+}
+
+# 설정 파일 쓰기. 반환: 만든 파일 경로 배열 (실패하면 예외; 이미 만든 것은 호출한 쪽이 되돌림 대상으로 기록)
+function Write-SeedFiles($spec, $created) {
+    foreach ($fl in $spec.Files) {
+        $dir = Split-Path $fl.Path -Parent
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+        Write-JsonText $fl.Path $fl.Text $false
+        $created.Add($fl.Path) | Out-Null
+    }
+}
+
+# 게임 기록 파일 경로 (클라이언트별 설정·완료 임무 목록. 없으면 첫 실행 때 지난 임무 영상을 모두 받음)
+function Get-SeedDbPath([string]$game) { return (Join-Path $game 'Client\Saved\LocalStorage\LocalStorage.db') }
+
+# 원본의 게임 기록을 대상에 복사 (.db 한 개만, journal 은 복사하지 않음). 대상에 이미 있으면 건드리지 않음
+function Copy-SeedDb([string]$srcGame, [string]$dstGame, $created) {
+    $sf = Get-SeedDbPath $srcGame; $df = Get-SeedDbPath $dstGame
+    if (-not (Test-Path -LiteralPath $sf -PathType Leaf)) { throw ('원본에 DB 파일이 없습니다: ' + $sf) }
+    if (Test-Path -LiteralPath $df) { Log ('  [건너뜀] 대상에 DB 파일이 이미 있습니다: ' + $df); return }
+    $dir = Split-Path $df -Parent
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    Copy-Item -LiteralPath $sf -Destination $df -ErrorAction Stop
+    $null = $created.Add($df)
+    Log ('  [DB 복사] ' + $sf + ' → ' + $df)
+}
+
+# 부분 복구 필요(이식 미완료) 상태에서 클라이언트 종류(앱 ID) 변경: 설정 파일의 appId 값만 수정 (되돌리기 가능)
+function Invoke-SeedAppId([int]$idx) {
+    $ds = Get-State $script:paths.dst
+    if (-not $ds -or -not $ds.Partial) { return }
+    $jf = Join-Path $ds.Game 'launcherDownloadConfig.json'
+    if (-not (Test-Path -LiteralPath $jf -PathType Leaf)) { Show-Warn ("설정 파일을 찾을 수 없습니다:`r`n" + $jf); return }
+    $new = $SeedTypes[$idx - 1]
+    $t = Read-JsonText $jf
+    $m = [regex]::Match($t.Text, '("appId"\s*:\s*")([^"]*)(")')
+    if (-not $m.Success) { Show-Warn '설정 파일에서 appId 항목을 찾지 못했습니다. 수정하지 않았습니다.'; return }
+    $oldId = $m.Groups[2].Value
+    if ($oldId -eq [string]$new.Id) { $cmbSeed.SelectedIndex = $idx; return }
+    $oldName = $oldId
+    foreach ($x in $SeedTypes) { if ([string]$x.Id -eq $oldId) { $oldName = ('{0} ({1})' -f $x.Name, $x.Id); break } }
+    $run = Get-RunningConflicts @($ds.Game)
+    if ($run.Count -gt 0) { Show-Warn ("런처(트레이 포함)가 실행 중입니다. 완전히 종료한 뒤 다시 시도하세요:`r`n" + ($run -join ', ')); return }
+    $ans = [Windows.Forms.MessageBox]::Show(("클라이언트 종류를 변경할까요?`r`n`r`n{0} → {1} (앱 ID {2})`r`n`r`n대상 설정 파일(launcherDownloadConfig.json)의 앱 ID만 수정합니다." -f $oldName, $new.Name, $new.Id), '클라이언트 종류 변경', 'YesNo', 'Question', 'Button2')
+    if ($ans -ne 'Yes') { return }
+    try {
+        $g = $m.Groups[2]
+        $nt = $t.Text.Substring(0, $g.Index) + [string]$new.Id + $t.Text.Substring($g.Index + $g.Length)
+        Write-JsonText $jf $nt $t.Bom
+        Log ('[클라이언트 종류 변경] {0} → {1} (앱 ID {2})  {3}' -f $oldName, $new.Name, $new.Id, $jf)
+        $script:undoStack = @($script:undoStack) + [pscustomobject]@{ Type = 'appid'; Time = (Get-Date); Game = $ds.Game; File = $jf; OldText = $t.Text; NewText = $nt; Bom = $t.Bom; Desc = ('{0} → {1}' -f $oldName, $new.Name) }
+        $cmbSeed.SelectedIndex = $idx
+        Update-Rows
+        $lblStatus.Text = '클라이언트 종류를 변경했습니다.'
+    } catch { Show-Warn ("변경하지 못했습니다:`r`n" + $_.Exception.Message) }
+}
+
+# ---------------------------------------------------------------- 번들 보강 (이미 있는 설정 파일에 빠진 품질 번들 추가)
+
+# 원본 설정의 번들 한 개: @{ Version; Packs; Json } (없거나 읽을 수 없으면 $null)
+function Get-SrcBundle([string]$srcGame, [string]$q) {
+    $f = Join-Path $srcGame 'launcherDownloadConfig.json'
+    try { $j = (Read-JsonText $f).Text | ConvertFrom-Json } catch { return $null }
+    $b = $null; if ($j.bundles) { $b = $j.bundles.PSObject.Properties[$q] }
+    if (-not $b) { return $null }
+    $v = [string]$b.Value.version
+    if ($v -notmatch '^\d+\.\d+(\.\d+)?$') { return $null }
+    $rp = @(); foreach ($x in @($b.Value.resourcePacks)) { if ([string]$x -match '^[A-Za-z0-9_]+$') { $rp += [string]$x } }
+    if ($rp.Count -eq 0) { $rp = @('common', $q.ToLowerInvariant()) }
+    $js = '"{0}":{{"version":"{1}","state":"","resourcePacks":[{2}]}}' -f $q, $v, (($rp | ForEach-Object { '"' + $_ + '"' }) -join ',')
+    return @{ Version = $v; Packs = $rp; Json = $js }
+}
+
+# JSON 텍스트의 "bundles" 객체 끝에 항목을 추가 (원래 서식은 그대로 두고 문자열만 삽입). 실패하면 $null
+function Add-BundleToText([string]$text, [string]$entryJson) {
+    $m = [regex]::Match($text, '"bundles"\s*:\s*\{')
+    if (-not $m.Success) { return $null }
+    $i = $m.Index + $m.Length; $depth = 1; $inStr = $false; $end = -1
+    for ($k = $i; $k -lt $text.Length; $k++) {
+        $c = $text[$k]
+        if ($inStr) { if ($c -eq [char]92) { $k++ } elseif ($c -eq [char]34) { $inStr = $false }; continue }
+        if ($c -eq [char]34) { $inStr = $true }
+        elseif ($c -eq [char]123) { $depth++ }
+        elseif ($c -eq [char]125) { $depth--; if ($depth -eq 0) { $end = $k; break } }
+    }
+    if ($end -lt 0) { return $null }
+    $inner = $text.Substring($i, $end - $i)
+    $sep = ''; if ($inner.Trim() -ne '') { $sep = ',' }
+    $ins = $i + $inner.TrimEnd().Length
+    return $text.Substring(0, $ins) + $sep + $entryJson + $text.Substring($ins)
+}
+
+# 대상 설정 파일에 빠진 품질 번들 계산. 반환: @{ Error; Edits = @(@{File;Old;New;Bom}); Files = @(@{Path;Text}); Lines }
+function Get-BundlePlan([string]$srcGame, [string]$dstGame, [string[]]$keys) {
+    $r = @{ Error = $null; Edits = @(); Files = @(); Lines = @() }
+    $f = Join-Path $dstGame 'launcherDownloadConfig.json'
+    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return $r }
+    try { $t = Read-JsonText $f; $dj = $t.Text | ConvertFrom-Json } catch { $r.Error = "대상 launcherDownloadConfig.json을 읽을 수 없습니다:`r`n" + $f; return $r }
+    $text = $t.Text; $changed = $false; $names = @()
+    foreach ($q in 'UHD', 'HD', 'SD') {
+        if ($keys -notcontains $q) { continue }
+        $has = $false; if ($dj.bundles -and $dj.bundles.PSObject.Properties[$q]) { $has = $true }
+        if ($has) { continue }
+        $sb = Get-SrcBundle $srcGame $q
+        if (-not $sb) { $r.Error = "원본 설정 파일에 $q 번들 정보가 없어 대상 설정에 추가할 수 없습니다."; return $r }
+        $nt = Add-BundleToText $text $sb.Json
+        if (-not $nt) { $r.Error = "대상 설정 파일에 $q 번들을 추가하지 못했습니다 (bundles 항목을 찾지 못함)."; return $r }
+        $text = $nt; $changed = $true; $names += $q
+        foreach ($pk in $sb.Packs) {
+            $pf = Join-Path $dstGame ('launcherDownloadConfig\' + $pk + '.json')
+            if ((Test-Path -LiteralPath $pf -PathType Leaf) -or ($r.Files | Where-Object { $_.Path -ieq $pf })) { continue }
+            $pv = $sb.Version
+            $sf = Join-Path $srcGame ('launcherDownloadConfig\' + $pk + '.json')
+            if (Test-Path -LiteralPath $sf -PathType Leaf) {
+                try { $x = [string]((Read-JsonText $sf).Text | ConvertFrom-Json).version; if ($x -match '^\d+\.\d+(\.\d+)?$') { $pv = $x } } catch { }
+            }
+            $r.Files += @{ Path = $pf; Text = ('{{"packName":"{0}","version":"{1}"}}' -f $pk, $pv); Name = ($pk + '.json') }
+        }
+    }
+    if ($changed) {
+        $r.Edits += @{ File = $f; Old = $t.Text; New = $text; Bom = $t.Bom }
+        $fl = @('launcherDownloadConfig.json') + @($r.Files | ForEach-Object { $_.Name })
+        $r.Lines += ('  - 대상 설정에 {0} 번들 추가 ({1})' -f ($names -join ', '), ($fl -join ', '))
+    }
+    return $r
+}
+
+# 번들 계획 적용. $created: 새로 만든 파일 경로 목록(ArrayList), $edited: 수정한 설정 기록(ArrayList)
+function Invoke-BundlePlan($plan, $created, $edited) {
+    foreach ($fl in $plan.Files) {
+        $step = '폴더 확인'
+        try {
+            $dir = Split-Path $fl.Path -Parent
+            if (-not (Test-Path -LiteralPath $dir -PathType Container)) { $null = New-Item -ItemType Directory -Force -Path $dir }
+            $step = '파일 쓰기'
+            Write-JsonText $fl.Path $fl.Text $false
+            $step = '기록'
+            if ($null -ne $created) { $null = $created.Add([string]$fl.Path) }
+            Log ('  [설정 파일 생성] ' + $fl.Path)
+        } catch { throw ('{0} 단계 ({1}): {2}' -f $fl.Name, $step, $_.Exception.Message) }
+    }
+    foreach ($ed in $plan.Edits) {
+        $step = '파일 쓰기'
+        try {
+            Write-JsonText $ed.File $ed.New $ed.Bom
+            $step = '기록'
+            if ($null -ne $edited) { $null = $edited.Add([pscustomobject]@{ File = $ed.File; Old = $ed.Old; New = $ed.New; Bom = $ed.Bom }) }
+            Log ('  [설정 파일 수정] ' + $ed.File + ' (번들 추가)')
+        } catch { throw ('launcherDownloadConfig.json 수정 단계 ({0}): {1}' -f $step, $_.Exception.Message) }
+    }
+}
+
+# JSON 텍스트의 "bundles" 안에서 항목(UHD/HD/SD)을 제거 (원래 서식은 그대로). 없으면 $null
+function Remove-BundleFromText([string]$text, [string]$name) {
+    $m = [regex]::Match($text, '"bundles"\s*:\s*\{')
+    if (-not $m.Success) { return $null }
+    # bundles 객체의 바로 아래 속성(깊이 1)에서만 이름을 찾는다 (하위 객체 안의 같은 이름은 무시)
+    $bs = $m.Index + $m.Length; $bd = 1; $bin = $false; $ks = -1; $i = -1
+    for ($q = $bs; $q -lt $text.Length; $q++) {
+        $ch = $text[$q]
+        if ($bin) { if ($ch -eq [char]92) { $q++ } elseif ($ch -eq [char]34) { $bin = $false }; continue }
+        if ($ch -eq [char]34) {
+            if ($bd -eq 1) {
+                $qe = $text.IndexOf([char]34, $q + 1)
+                while ($qe -gt 0 -and $text[$qe - 1] -eq [char]92) { $qe = $text.IndexOf([char]34, $qe + 1) }
+                if ($qe -gt 0 -and $text.Substring($q + 1, $qe - $q - 1) -ceq $name) {
+                    $km = [regex]::Match($text.Substring($qe + 1), '^\s*:\s*\{')
+                    if ($km.Success) { $ks = $q; $i = $qe + 1 + $km.Length; break }
+                }
+            }
+            $bin = $true
+        }
+        elseif ($ch -eq [char]123) { $bd++ }
+        elseif ($ch -eq [char]125) { $bd--; if ($bd -eq 0) { break } }
+    }
+    if ($ks -lt 0) { return $null }
+    $depth = 1; $inStr = $false; $end = -1
+    for ($k = $i; $k -lt $text.Length; $k++) {
+        $c = $text[$k]
+        if ($inStr) { if ($c -eq [char]92) { $k++ } elseif ($c -eq [char]34) { $inStr = $false }; continue }
+        if ($c -eq [char]34) { $inStr = $true }
+        elseif ($c -eq [char]123) { $depth++ }
+        elseif ($c -eq [char]125) { $depth--; if ($depth -eq 0) { $end = $k; break } }
+    }
+    if ($end -lt 0) { return $null }
+    $before = $text.Substring(0, $ks); $after = $text.Substring($end + 1)
+    $bt = $before.TrimEnd()
+    if ($bt.EndsWith(',')) { $before = $bt.Substring(0, $bt.Length - 1) + $before.Substring($bt.Length) }
+    else { $at = $after.TrimStart(); if ($at.StartsWith(',')) { $after = $at.Substring(1) } }
+    return $before + $after
+}
+
+# 해제 후 비게 되는 품질 폴더(UHD/HD/SD)의 번들을 대상 설정에서 제거하는 계획.
+#  반환: @{ Error; Edits; Renames = @(@{From;To}); Lines; Skipped }
+function Get-BundleRemovePlan([string]$dstGame, [string[]]$names) {
+    $r = @{ Error = $null; Edits = @(); Renames = @(); Lines = @(); Skipped = @() }
+    $f = Join-Path $dstGame 'launcherDownloadConfig.json'
+    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return $r }
+    try { $t = Read-JsonText $f; $dj = $t.Text | ConvertFrom-Json } catch { $r.Error = "대상 launcherDownloadConfig.json을 읽을 수 없습니다:`r`n" + $f; return $r }
+    if (-not $dj.bundles) { return $r }
+    $remain = @($dj.bundles.PSObject.Properties | ForEach-Object { $_.Name })
+    $text = $t.Text; $removed = @()
+    foreach ($q in 'UHD', 'HD', 'SD') {
+        if ($names -notcontains $q -or $remain -notcontains $q) { continue }
+        $nt = Remove-BundleFromText $text $q
+        if (-not $nt) { $r.Skipped += $q; continue }
+        $text = $nt; $remain = @($remain | Where-Object { $_ -ne $q }); $removed += $q
+    }
+    if ($removed.Count -eq 0) { return $r }
+    $keepPacks = @()
+    foreach ($b in $dj.bundles.PSObject.Properties) { if ($remain -contains $b.Name) { $keepPacks += @($b.Value.resourcePacks) } }
+    $files = @()
+    foreach ($q in $removed) {
+        foreach ($pk in @($dj.bundles.PSObject.Properties[$q].Value.resourcePacks)) {
+            if ($keepPacks -contains $pk -or [string]$pk -ieq 'common') { continue }   # 공통 팩(common)은 번들이 모두 없어져도 남김
+            $pf = Join-Path $dstGame ('launcherDownloadConfig\' + $pk + '.json')
+            if ((Test-Path -LiteralPath $pf -PathType Leaf) -and -not ($files -contains $pf)) { $files += $pf }
+        }
+    }
+    foreach ($pf in $files) { $r.Renames += @{ From = $pf } }
+    $r.Edits += @{ File = $f; Old = $t.Text; New = $text; Bom = $t.Bom }
+    $fl = @('launcherDownloadConfig.json') + @($files | ForEach-Object { Split-Path $_ -Leaf })
+    $r.Lines += ('  - 대상 설정에서 {0} 번들 제거 ({1}, 팩 파일 삭제)' -f ($removed -join ', '), ($fl -join ', '))
+    return $r
+}
+
+function Invoke-BundleRemove($plan) {
+    foreach ($ed in $plan.Edits) {
+        try { Write-JsonText $ed.File $ed.New $ed.Bom; Log ('  [설정 파일 수정] ' + $ed.File + ' (번들 제거)') }
+        catch { throw ('launcherDownloadConfig.json 수정 단계: ' + $_.Exception.Message) }
+    }
+    foreach ($rn in $plan.Renames) {
+        try {
+            $old = ''; try { $old = (Get-Content -LiteralPath $rn.From -Raw -Encoding UTF8).Trim() } catch { }
+            [IO.File]::Delete($rn.From)
+            Log ('  [설정 파일 삭제] ' + $rn.From + '  (내용: ' + $old + ')')
+        } catch { throw ((Split-Path $rn.From -Leaf) + ' 삭제 단계: ' + $_.Exception.Message) }
+    }
+}
+
+# 링크 확인 팝업용: 대상의 실제 폴더가 원본과 다를 때의 경고 줄 (없으면 빈 배열)
+function Get-DiffWarnLines($plan, $ssGame, $dsGame) {
+    $out = @(); $warn = @(); $n = 0
+    foreach ($a in @($plan)) {
+        if ($a.Kind -ne 'backup+link') { continue }
+        $dc = Get-DirCompare $a.Src $a.Dst
+        if ($dc.Status -eq 'differs') { $warn += $a.Sub; $n += $dc.Diff }
+    }
+    if ($warn.Count -eq 0) { return $out }
+    $out += ('[주의] 대상의 {0} 폴더가 원본과 다릅니다 (원본에 없거나 크기가 다른 파일 {1}개).' -f ($warn -join ', '), $n)
+    $out += '원본이 최신 버전이라면 기존 폴더는 _backup 으로 보관되며, 링크 확인 후 [백업 삭제]로 지우는 것을 권장합니다.'
+    $sv = Get-ClientVersion $ssGame; $dv = Get-ClientVersion $dsGame
+    if ($sv -and $dv -and ([version]$dv.Content) -gt ([version]$sv.Content)) { $out += ('대상 버전({0})이 원본({1})보다 높습니다. 원본을 먼저 업데이트하는 것을 권장합니다.' -f $dv.Content, $sv.Content) }
+    return $out
 }
 
 # 링크 전 공통 안전 검사 ([링크 생성] 탭과 [링크 관리] 탭이 함께 사용). 문제가 있으면 안내 문구, 없으면 $null
 #  $targets = @(@{ Name; Path; Ds; Keys; Plan })  Name 이 비어 있으면 안내 문구 앞에 [이름]을 붙이지 않음, Plan 이 없으면 여기서 만듦
-function Test-LinkSafety($ss, $targets, [bool]$needSymlink) {
+function Test-LinkSafety($ss, $targets, [bool]$needSymlink, [bool]$allowLower = $false) {
     if (-not $ss -or -not $ss.Exe) {
         $g = ''; if ($ss) { $g = "`r`n" + $ss.Game }
-        return ("원본에 구성 파일이 없습니다 (Wuthering Waves Game\Wuthering Waves.exe 확인 불가):" + $g)
+        return ("원본에 클라이언트가 없습니다 (Wuthering Waves Game\Wuthering Waves.exe 확인 불가):" + $g)
     }
     $games = @($ss.Game)
     foreach ($t in $targets) {
@@ -1911,12 +2711,27 @@ function Test-LinkSafety($ss, $targets, [bool]$needSymlink) {
         $pre = ''; if ($t.Name) { $pre = '[' + $t.Name + '] ' }
         if (-not $ds) { return ($pre + "대상 폴더를 확인할 수 없습니다:`r`n" + $t.Path) }
         if (-not $ds.Launcher) { return ($pre + "대상 경로에 launcher.exe가 없습니다. 대상 런처의 설치 폴더를 지정하세요:`r`n" + $ds.Root) }
-        if (-not $ds.Exe) { return ($pre + "대상에 구성 파일이 없어 링크할 수 없습니다. 먼저 클라이언트를 설치(또는 이식)하세요:`r`n" + $ds.Game) }
+        if (-not $ds.Exe -and -not $t.Seed -and $ds.Partial) { return ($pre + "대상은 클라이언트가 일부만 있는 '부분 복구 필요' 상태입니다. 대상 런처에서 [게임 복구]를 마친 뒤 진행하세요:`r`n" + $ds.Game) }
+        if (-not $ds.Exe -and -not $t.Seed) { return ($pre + "대상에 클라이언트가 없어 링크할 수 없습니다. 먼저 클라이언트를 설치(또는 이식)하세요:`r`n" + $ds.Game) }
         if ($ss.Game -ieq $ds.Game) { return ($pre + '원본과 대상이 같습니다.') }
         if (Test-Nested $ss.Game $ds.Game) { return ($pre + '원본과 대상이 서로 포함 관계입니다.') }
         foreach ($g in $games) { if ($g -ine $ss.Game -and (($g -ieq $ds.Game) -or (Test-Nested $g $ds.Game))) { return ($pre + '다른 대상과 같거나 서로 포함 관계입니다.') } }
-        $cv = Get-LinkCompat $ss.Game $ds.Game $t.Keys
-        if ($cv.Level -eq 'minor') { return ($pre + $cv.Block) }
+        if (-not $t.Seed) {
+            $cv = Get-LinkCompat $ss.Game $ds.Game $t.Keys
+            if ($cv.Level -eq 'minor') {
+                # 링크 관리: 대상이 원본보다 낮은 버전이면 허용 (링크 후 '동기화 필요' 상태가 되어 [업데이트 후 동기화]로 맞춤)
+                $lowerOk = $false
+                if ($allowLower) {
+                    $sv0 = Get-ClientVersion $ss.Game; $dv0 = Get-ClientVersion $ds.Game
+                    if ($sv0 -and $dv0 -and (([version]$dv0.Content) -lt ([version]$sv0.Content))) { $lowerOk = $true }
+                }
+                if (-not $lowerOk) { return ($pre + $cv.Block) }
+            }
+            if ($cv.Level -eq 'unknown') {
+                if (-not (Get-ClientVersion $ss.Game)) { return ($pre + ("원본의 버전 정보를 확인할 수 없습니다 ({0}).`r`n`r`n확인할 파일:`r`n" -f (Get-VersionWhy $ss.Game)) + (Join-Path $ss.Game 'launcherDownloadConfig.json')) }
+                return ($pre + ("대상의 버전 정보를 확인할 수 없습니다 ({0}).`r`n`r`n확인할 파일:`r`n" -f (Get-VersionWhy $ds.Game)) + (Join-Path $ds.Game 'launcherDownloadConfig.json'))
+            }
+        }
         foreach ($k in $t.Keys) {
             $it = Get-ItemByKey $k
             $p = Join-Path $ss.Game $it.Sub
@@ -1939,6 +2754,7 @@ function Get-PlanText($a) {
         'skip'        { return ('{0}: 이미 연결됨 (건너뜀)' -f $a.Sub) }
         'link'        { return ('{0}: 링크 생성' -f $a.Sub) }
         'backup+link' { return ('{0}: 기존 폴더를 {1}_backup 으로 이름 변경(백업) → 링크 생성' -f $a.Sub, $leaf) }
+        'replace-empty' { return ('{0}: 빈 폴더(파일 없음)를 링크로 교체 (백업 없음)' -f $a.Sub) }
         'relink'      { return ('{0}: 다른 경로 링크 해제 → 재연결' -f $a.Sub) }
         default       { return ('{0}: 처리 불가' -f $a.Sub) }
     }
@@ -1950,11 +2766,27 @@ function Show-Warn([string]$msg, [string]$title = '중단') { [void][Windows.For
 
 $btnPrev.Add_Click({
     if ($script:busy) { return }
-    $ans = [Windows.Forms.MessageBox]::Show("대상 런처에서 [게임 복구]를 마쳤고 게임 실행이 정상적으로 되는 것을 확인했습니까?`r`n`r`n[예]를 누르면 [백업 삭제]를 진행할 수 있습니다.", '확인', 'YesNo', 'Question', 'Button2')
+    if (-not $script:launched) {
+        # 첫 클릭: 대상 런처 실행 (탐색기를 거쳐 일반 권한으로 띄움)
+        $dst = Get-State $script:paths.dst
+        $exe = ''; if ($dst) { $exe = Join-Path $dst.Root 'launcher.exe' }
+        if (-not $exe -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) { Show-Warn ("대상 런처(launcher.exe)를 찾을 수 없습니다:`r`n" + $exe); return }
+        try { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"' + $exe + '"') -ErrorAction Stop }
+        catch { Show-Warn ("런처를 실행하지 못했습니다:`r`n" + $_.Exception.Message); return }
+        Log ('[런처 실행] ' + $exe)
+        $script:launched = $true
+        Update-Rows
+        $lblStatus.Text = '런처를 실행했습니다 · [게임 복구]와 게임 실행을 확인한 뒤 다시 눌러 주세요'
+        return
+    }
+    $tail = '[예]를 누르면 [백업 삭제]를 진행할 수 있습니다.'
+    if ($script:linkPending -and -not $script:seedPending) { $tail = '[예]를 누르면 확인 완료로 표시합니다. (백업이 있으면 [백업 삭제]를 진행할 수 있습니다.)' }
+    if ($script:seedPending) { $tail = '[예]를 누르면 클라이언트 이식 설정이 완료된 것으로 표시합니다.' }
+    $ans = [Windows.Forms.MessageBox]::Show("대상 런처에서 [게임 복구]를 마쳤고 게임 실행이 정상적으로 되는 것을 확인했습니까?`r`n`r`n" + $tail, '확인', 'YesNo', 'Question', 'Button2')
     if ($ans -ne 'Yes') { return }
     $script:ok2 = $true
     Update-Rows
-    $lblStatus.Text = '확인 완료 · [백업 삭제]를 진행할 수 있습니다.'
+    if ($script:seedPending) { $lblStatus.Text = '확인 완료 · 클라이언트 이식 설정이 끝났습니다.' } elseif ($script:linkPending) { $lblStatus.Text = '확인 완료 · 링크 구성이 끝났습니다.' } else { $lblStatus.Text = '확인 완료 · [백업 삭제]를 진행할 수 있습니다.' }
 })
 
 # ---------------------------------------------------------------- 링크 실행: 백업(이름 변경) → 링크
@@ -1970,6 +2802,12 @@ function Invoke-PlanItem($a, [string]$stamp) {
             [IO.Directory]::Delete($a.Dst)
             if (Test-Path -LiteralPath $a.Dst) { throw '기존 링크를 해제하지 못했습니다.' }
             Log ('  [링크 해제] ' + $a.Dst)
+        }
+        if ($a.Kind -eq 'replace-empty') {
+            if (-not (Test-DirEmpty $a.Dst)) { throw '대상 폴더가 비어 있지 않게 바뀌었습니다 (그 사이 상태가 바뀜).' }
+            [IO.Directory]::Delete($a.Dst, $true)
+            if (Test-Path -LiteralPath $a.Dst) { throw '빈 폴더를 제거하지 못했습니다.' }
+            Log ('  [빈 폴더 제거] ' + $a.Dst)
         }
         if ($a.Kind -eq 'backup+link') {
             $parent = Split-Path $a.Dst -Parent
@@ -2010,16 +2848,64 @@ $btnRun.Add_Click({
     $keys = @(Get-SelectedKeys)
     $plan = @(Build-Plan $ss.Game $ds.Game $keys)
     $todo = @($plan | Where-Object { $_.Kind -ne 'skip' })
-    if ($todo.Count -eq 0) { Show-Warn '할 일이 없습니다 (선택한 폴더가 모두 이미 연결되어 있음).' '알림'; $lblStatus.Text = '할 일 없음'; return }
+    $bp = $null
+    if (-not $ds.Seedable -and $ds.Exe) {
+        $bp = Get-BundlePlan $ss.Game $ds.Game $keys
+        if ($bp.Error) { Show-Warn $bp.Error; return }
+    }
+    $nBp = 0; if ($bp) { $nBp = @($bp.Edits).Count }
+    if ($todo.Count -eq 0 -and $nBp -eq 0) { Show-Warn '할 일이 없습니다 (선택한 폴더가 모두 이미 연결되어 있음).' '알림'; $lblStatus.Text = '할 일 없음'; return }
     $oldCur = [Windows.Forms.Cursor]::Current; [Windows.Forms.Cursor]::Current = [Windows.Forms.Cursors]::WaitCursor
     $sv = [long]0
     try { foreach ($a in $todo) { try { $sv += (Get-DirStat $a.Src).Bytes } catch { } } } finally { [Windows.Forms.Cursor]::Current = $oldCur }
-    $lines = @(('원본: ' + $ss.Game), ('대상: ' + $ds.Game), (Get-LinkCompat $ss.Game $ds.Game $keys).Line)
-    foreach ($a in $plan) { $lines += ('  - ' + (Get-PlanText $a)) }
-    if ($sv -gt 0) { $lines += ('연결되는 폴더 합계 약 ' + (Format-Size $sv) + ' (중복 저장이 없어지는 용량)') }
-    $note = Get-VersionNote $ss.Game $ds.Game '' $keys
-    if ($note) { $lines += ''; $lines += $note.TrimEnd() }
-    $ans = [Windows.Forms.MessageBox]::Show((($lines -join "`r`n") + "`r`n`r`n위의 설정으로 링크를 진행할까요?"), '링크 확인', 'YesNo', 'Question', 'Button2')
+    $seed = [bool]$ds.Seedable
+    $spec = $null; $stype = $null; $seedDb = $false
+    if ($seed) {
+        $stype = $SeedTypes[$cmbSeed.SelectedIndex - 1]
+        $cid = Get-KRAppConfId $ds.Root
+        if ($cid -and $cid -ne [string]$stype.Id) {
+            $cn = $cid; foreach ($x in $SeedTypes) { if ([string]$x.Id -eq $cid) { $cn = ('{0} ({1})' -f $x.Name, $x.Id) } }
+            $mw = [Windows.Forms.MessageBox]::Show(("선택한 종류 [{0} ({1})]가 대상 런처 설정의 종류 [{2}]와 다릅니다.`r`n다른 종류로 설정하면 런처가 클라이언트를 인식하지 못할 수 있습니다.`r`n`r`n그래도 진행할까요?" -f $stype.Name, $stype.Id, $cn), '종류 확인', 'YesNo', 'Warning', 'Button2')
+            if ($mw -ne 'Yes') { return }
+        }
+        $spec = Get-SeedSpec $ss.Game $ds.Game $keys ([string]$stype.Id)
+        if ($spec.Error) { Show-Warn $spec.Error; return }
+        $lines = @(('원본: ' + $ss.Game), ('대상: ' + $ds.Game), ('원본 버전: ' + $spec.Version), '')
+        $lines += '[클라이언트 이식]  (대상에 클라이언트 없음)'
+        $lines += ('  - 클라이언트 종류: {0} (앱 ID {1})' -f $stype.Name, $stype.Id)
+        $lines += ('  - 설정 파일 생성: ' + (($spec.Files | ForEach-Object { $_.Name }) -join ', '))
+        $seedDb = [bool]($script:seedDbAvail -and $chkSeedDb.Tag.On)
+        if ($seedDb) { $lines += '  - 원본 DB 복사: LocalStorage.db (게임 사용자 설정 복사, 영상 리소스 강제 다운로드 방지)' }
+        $lines += ''; $lines += '[링크]'
+        foreach ($a in $plan) { $lines += ('  - ' + (Get-PlanText $a)) }
+        if ($sv -gt 0) { $lines += ''; $lines += ('연결되는 폴더 합계 약 ' + (Format-Size $sv) + ' (절약되는 용량)') }
+        $lines += '이후 런처의 [게임 복구]로 나머지 파일을 받게 됩니다.'
+    } else {
+        $lines = @(('원본: ' + $ss.Game), ('대상: ' + $ds.Game), (Get-LinkCompat $ss.Game $ds.Game $keys).Line)
+        foreach ($a in $plan) { $lines += ('  - ' + (Get-PlanText $a)) }
+        if ($sv -gt 0) { $lines += ('연결되는 폴더 합계 약 ' + (Format-Size $sv) + ' (절약되는 용량)') }
+        if ($nBp -gt 0) { $lines += ''; $lines += '[설정 파일]'; $lines += $bp.Lines }
+        $warnDiff = @(); $diffN = 0
+        foreach ($a in $plan) {
+            if ($a.Kind -ne 'backup+link') { continue }
+            $dc = Get-DirCompare $a.Src $a.Dst
+            if ($dc.Status -eq 'differs') { $warnDiff += (Split-Path $a.Sub -Leaf); $diffN += $dc.Diff }
+        }
+        if ($warnDiff.Count -gt 0) {
+            $lines += ''
+            $lines += ('[주의] 대상의 {0} 폴더가 원본과 다릅니다 (원본에 없거나 크기가 다른 파일 {1}개).' -f ($warnDiff -join ', '), $diffN)
+            $lines += '원본이 최신 버전이라면 기존 폴더는 _backup 으로 보관되며, 링크 확인 후 [백업 삭제]로 지우는 것을 권장합니다.'
+            $sv0 = Get-ClientVersion $ss.Game; $dv0 = Get-ClientVersion $ds.Game
+            if ($sv0 -and $dv0 -and ([version]$dv0.Content) -gt ([version]$sv0.Content)) {
+                $lines += ('대상 버전({0})이 원본({1})보다 높습니다. 원본을 먼저 업데이트하는 것을 권장합니다.' -f $dv0.Content, $sv0.Content)
+            }
+        }
+        $note = Get-VersionNote $ss.Game $ds.Game '' $keys
+        if ($note) { $lines += ''; $lines += $note.TrimEnd() }
+    }
+    $askTail = '위의 설정으로 링크를 진행할까요?'
+    if ($seed) { $askTail = '위의 설정으로 진행할까요?' }
+    $ans = [Windows.Forms.MessageBox]::Show((($lines -join "`r`n") + "`r`n`r`n" + $askTail), '링크 확인', 'YesNo', 'Question', 'Button2')
     if ($ans -ne 'Yes') { return }
     $offer = $false
     $offSrc = $ss.Root; $offDst = $ds.Root
@@ -2031,18 +2917,46 @@ $btnRun.Add_Click({
         $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
         $okAll = $true
         $script:runRec = @()
+        $seedMade = New-Object Collections.ArrayList
+        $bundleEdits = New-Object Collections.ArrayList
         foreach ($a in $plan) {
             $lblStatus.Text = '처리 중: ' + $a.Sub
             [Windows.Forms.Application]::DoEvents()
             if (-not (Invoke-PlanItem $a $stamp)) { $okAll = $false; break }
         }
-        if ($script:runRec.Count -gt 0 -and $ds) { $script:undoStack = @($script:undoStack) + [pscustomobject]@{ Time = (Get-Date); Game = $ds.Game; Recs = @($script:runRec) } }
+        if ($okAll -and $seed) {
+            # 링크가 모두 만들어진 뒤에 런처 설정 파일을 만든다 (링크 실패 시 런처가 설치된 것으로 오인하지 않게)
+            $lblStatus.Text = '처리 중: 런처 설정 파일'
+            [Windows.Forms.Application]::DoEvents()
+            try {
+                Write-SeedFiles $spec $seedMade
+                foreach ($fp in $seedMade) { Log ('  [설정 파일 생성] ' + $fp) }
+                if ($seedDb) { Copy-SeedDb $ss.Game $ds.Game $seedMade }
+            } catch {
+                Log ('  [실패] 런처 설정 파일: ' + $_.Exception.Message)
+                $okAll = $false
+            }
+        }
+        if ($okAll -and $nBp -gt 0) {
+            $lblStatus.Text = '처리 중: 런처 설정 파일'
+            [Windows.Forms.Application]::DoEvents()
+            try { Invoke-BundlePlan $bp $seedMade $bundleEdits }
+            catch { Log ('  [실패] 런처 설정 파일: ' + $_.Exception.Message); $okAll = $false }
+        }
+        if (($script:runRec.Count -gt 0 -or $seedMade.Count -gt 0 -or $bundleEdits.Count -gt 0) -and $ds) { $script:undoStack = @($script:undoStack) + [pscustomobject]@{ Time = (Get-Date); Game = $ds.Game; Recs = @($script:runRec); Seeds = @($seedMade); Edits = @($bundleEdits) } }
         if ($okAll) {
             $offer = $true
-            $script:ok2 = $false
-            Log '완료: 링크 구성이 끝났습니다. 대상 런처에서 런처 실행과 [게임 복구]를 확인한 뒤 ②를 눌러 주세요.'
-            Log $SyncGuide
-            $lblStatus.Text = '완료 · 런처 실행/[게임 복구] 확인 후 ②를 눌러 주세요'
+            $script:ok2 = $false; $script:launched = $false
+            if ($seed) {
+                $script:seedPending = $ds.Root
+                Log '완료: 클라이언트 이식 설정이 끝났습니다. 대상 런처를 실행해 [게임 복구]를 진행한 뒤 ②를 눌러 주세요.'
+                $lblStatus.Text = '완료 · 런처 실행/[게임 복구] 후 ②를 눌러 주세요'
+            } else {
+                $script:linkPending = $ds.Root
+                Log '완료: 링크 구성이 끝났습니다. 대상 런처에서 런처 실행과 [게임 복구]를 확인한 뒤 ②를 눌러 주세요.'
+                Log $SyncGuide
+                $lblStatus.Text = '완료 · 런처 실행/[게임 복구] 확인 후 ②를 눌러 주세요'
+            }
         } else {
             Log '중단: 일부 항목에서 실패했습니다. 이미 연결된 항목은 [되돌리기]로 취소할 수 있습니다.'
             $lblStatus.Text = '일부 실패'
@@ -2057,8 +2971,28 @@ $btnRun.Add_Click({
 $btnUndo.Add_Click({
     if ($script:busy) { return }
     $st = @($script:undoStack)
-    if ($st.Count -eq 0) { Show-Warn '되돌릴 링크 실행 기록이 없습니다.' '알림'; return }
+    if ($st.Count -eq 0) { Show-Warn '되돌릴 작업 기록이 없습니다.' '알림'; return }
     $entry = $st[$st.Count - 1]
+    if ($entry.PSObject.Properties['Type'] -and $entry.Type -eq 'appid') {
+        $run = Get-RunningConflicts @($entry.Game)
+        if ($run.Count -gt 0) { Show-Warn ("런처(트레이 포함)가 실행 중입니다. 완전히 종료한 뒤 다시 시도하세요:`r`n" + ($run -join ', ')); return }
+        $cur = $null; try { if (Test-Path -LiteralPath $entry.File -PathType Leaf) { $cur = (Read-JsonText $entry.File).Text } } catch { }
+        if ($cur -ne $entry.NewText) {
+            Show-Warn "설정 파일이 그 사이 바뀌어 있어 되돌리지 않았습니다.`r`n이 기록은 목록에서 제거합니다."
+            $script:undoStack = @($st | Select-Object -First ($st.Count - 1)); Update-Rows; return
+        }
+        $ans = [Windows.Forms.MessageBox]::Show(("마지막 작업을 취소합니다.`r`n`r`n- 클라이언트 종류 변경: {0}`r`n  (앱 ID를 원래 값으로 복원)`r`n`r`n계속할까요?" -f $entry.Desc), '되돌리기 확인', 'YesNo', 'Warning', 'Button2')
+        if ($ans -ne 'Yes') { return }
+        try {
+            Write-JsonText $entry.File $entry.OldText $entry.Bom
+            Log ('[되돌리기] 클라이언트 종류 변경 취소: ' + $entry.Desc)
+            $script:undoStack = @($st | Select-Object -First ($st.Count - 1))
+            $script:seedFor = ''; $script:launched = $false
+            Update-Rows
+            $lblStatus.Text = '되돌리기 완료'
+        } catch { Show-Warn ("되돌리지 못했습니다:`r`n" + $_.Exception.Message) }
+        return
+    }
     $run = Get-RunningConflicts @($entry.Game)
     if ($run.Count -gt 0) { Show-Warn ("관련 프로세스가 실행 중입니다. 모두 종료한 뒤 다시 시도하세요:`r`n" + ($run -join ', ')); return }
     $recs = @($entry.Recs); [array]::Reverse($recs)
@@ -2079,11 +3013,22 @@ $btnUndo.Add_Click({
         $acts += $a
     }
     $okActs = @($acts | Where-Object { $_.Ok })
-    if ($okActs.Count -eq 0) {
+    $seedFiles = @(); if ($entry.PSObject.Properties['Seeds']) { $seedFiles = @($entry.Seeds | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) }) }
+    $edList = @(); $edSkip = @()
+    if ($entry.PSObject.Properties['Edits']) {
+        foreach ($ed in @($entry.Edits)) {
+            $okEd = $false
+            try { if ((Test-Path -LiteralPath $ed.File -PathType Leaf) -and ((Read-JsonText $ed.File).Text -eq $ed.New)) { $okEd = $true } } catch { }
+            if ($okEd) { $edList += $ed } else { $edSkip += $ed }
+        }
+    }
+    if ($okActs.Count -eq 0 -and $seedFiles.Count -eq 0 -and $edList.Count -eq 0) {
         Show-Warn ("되돌릴 수 있는 항목이 없습니다.`r`n" + (($acts | ForEach-Object { '- ' + $_.Rec.Sub + ': ' + $_.Text }) -join "`r`n")) '알림'
         $script:undoStack = @($st | Select-Object -First ($st.Count - 1)); Update-Rows; return
     }
     $txt = ($acts | ForEach-Object { '- ' + $_.Rec.Sub + ': ' + $_.Text }) -join "`r`n"
+    if ($seedFiles.Count -gt 0) { $txt += "`r`n- 이 도구가 만든 파일 {0}개 삭제 (런처 설정 파일, DB)" -f $seedFiles.Count }
+    if ($edList.Count -gt 0) { $txt += "`r`n- 런처 설정 파일 {0}개를 수정 전 내용으로 복원" -f $edList.Count }
     $ans = [Windows.Forms.MessageBox]::Show(("마지막 [링크 실행]을 취소합니다.`r`n`r`n" + $txt + "`r`n`r`n계속할까요?"), '되돌리기 확인', 'YesNo', 'Warning', 'Button2')
     if ($ans -ne 'Yes') { return }
     Set-Busy $true
@@ -2104,7 +3049,41 @@ $btnUndo.Add_Click({
                 }
             } catch { Log ('  [실패] ' + $r.Sub + ': ' + $_.Exception.Message) }
         }
+        foreach ($ed in $edSkip) { Log ('  [건너뜀] 설정 파일이 그 사이 바뀌어 있어 복원하지 않았습니다: ' + $ed.File) }
+        foreach ($ed in $edList) {
+            try { Write-JsonText $ed.File $ed.Old $ed.Bom; Log ('  [설정 파일 복원] ' + $ed.File) }
+            catch { Log ('  [실패] ' + $ed.File + ': ' + $_.Exception.Message) }
+        }
+        foreach ($sf in $seedFiles) {
+            try { Remove-Item -LiteralPath $sf -Force -ErrorAction Stop; Log ('  [설정 파일 삭제] ' + $sf) }
+            catch { Log ('  [실패] ' + $sf + ': ' + $_.Exception.Message) }
+            if ((Split-Path $sf -Leaf) -ieq 'LocalStorage.db') {
+                $jf = $sf + '-journal'
+                if (Test-Path -LiteralPath $jf -PathType Leaf) { try { Remove-Item -LiteralPath $jf -Force -ErrorAction Stop; Log ('  [설정 파일 삭제] ' + $jf) } catch { } }
+                $ld = Split-Path $sf -Parent
+                if ((Test-Path -LiteralPath $ld -PathType Container) -and -not (Get-ChildItem -LiteralPath $ld -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+                    try { Remove-Item -LiteralPath $ld -Force -ErrorAction Stop; Log ('  [빈 폴더 삭제] ' + $ld) } catch { }
+                }
+            }
+        }
+        if ($seedFiles.Count -gt 0) {
+            $cd = Join-Path $entry.Game 'launcherDownloadConfig'
+            if ((Test-Path -LiteralPath $cd -PathType Container) -and -not (Get-ChildItem -LiteralPath $cd -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+                try { Remove-Item -LiteralPath $cd -Force -ErrorAction Stop; Log ('  [빈 폴더 삭제] ' + $cd) } catch { }
+            }
+            $script:seedPending = ''; $script:ok2 = $false
+        }
+        # 이식 실행으로 만들어진 빈 상위 폴더 정리 (링크를 만들 때 생긴 Client\Content, Client\Saved, Client). 비어 있는 것만 지움
+        if ($entry.PSObject.Properties['Seeds'] -and @($entry.Seeds).Count -gt 0) {
+            $cl = Join-Path $entry.Game 'Client'
+            foreach ($dd in @((Join-Path $cl 'Content'), (Join-Path $cl 'Saved'), $cl)) {
+                if ((Test-Path -LiteralPath $dd -PathType Container) -and -not (Get-ChildItem -LiteralPath $dd -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+                    try { Remove-Item -LiteralPath $dd -Force -ErrorAction Stop; Log ('  [빈 폴더 삭제] ' + $dd) } catch { }
+                }
+            }
+        }
         Log '[되돌리기] 끝'
+        $script:launched = $false; $script:linkPending = ''; $script:ok2 = $false
         $script:undoStack = @($st | Select-Object -First ($st.Count - 1))
         $lblStatus.Text = '되돌리기 완료'
     } catch { Log ('오류: ' + $_.Exception.Message); $lblStatus.Text = '오류' }
@@ -2159,8 +3138,11 @@ $btnClean.Add_Click({
         $gone = @($cands | Where-Object { -not (Test-Path -LiteralPath $_.Path) } | ForEach-Object { $_.Path })
         $ns = @()
         foreach ($en in @($script:undoStack)) {
+            if ($en.PSObject.Properties['Type'] -and $en.Type -eq 'appid') { $ns += $en; continue }
             $keep = @($en.Recs | Where-Object { -not ($_.Bak -and ($gone -contains $_.Bak)) })
-            if ($keep.Count -gt 0) { $ns += [pscustomobject]@{ Time = $en.Time; Game = $en.Game; Recs = $keep } }
+            $sds = @(); if ($en.PSObject.Properties['Seeds']) { $sds = @($en.Seeds) }
+            $eds = @(); if ($en.PSObject.Properties['Edits']) { $eds = @($en.Edits) }
+            if ($keep.Count -gt 0 -or $sds.Count -gt 0 -or $eds.Count -gt 0) { $ns += [pscustomobject]@{ Time = $en.Time; Game = $en.Game; Recs = $keep; Seeds = $sds; Edits = $eds } }
         }
         $script:undoStack = $ns
         Log '[백업 삭제] 끝'
@@ -2242,8 +3224,15 @@ function Draw-Badge($g, [int]$x, [int]$y, [string]$text, $color, [int]$minW = 0)
     return $w
 }
 # 동기화 배지 글자: 필요하면 '동기화 필요', 그 외 '동기화'
-function Get-SyncText([string]$state) { if ($state -eq 'need') { return '동기화 필요' } else { return '동기화' } }
-# 동기화가 필요한 클라이언트 카드 / 링크 현황 열의 배경색
+function Get-SyncText([string]$state) {
+    if ($state -eq 'need') { return '동기화 필요' }
+    if ($state -eq 'update') { return '업데이트' }
+    if ($state -eq 'newer') { return '링크 불가' }   # 카드 폭이 좁아 짧은 문구 (이유는 칸을 눌렀을 때 안내)
+    if ($state -eq 'ok') { return '동기화' }
+    if ($state -eq 'current') { return '최신' }
+    return '미확인'
+}
+# 동기화가 필요(need)하거나 업데이트가 필요(update)한 클라이언트 카드 / 링크 현황 열의 배경색
 $cNeedFill = [Drawing.Color]::FromArgb(255, 244, 243)
 $cNeedLine = [Drawing.Color]::FromArgb(233, 180, 174)
 $cNeedBand = [Drawing.Color]::FromArgb(240, 201, 196)
@@ -2261,7 +3250,7 @@ function Get-WrappedPath([string]$text, $font, [int]$width, [int]$maxLines = 3) 
 }
 function Get-SyncColor([string]$state) {
     if ($state -eq 'ok') { return $cOk }
-    if ($state -eq 'need') { return $cDanger }
+    if ($state -eq 'need' -or $state -eq 'update' -or $state -eq 'newer') { return $cDanger }
     return (RGB 138 138 138)
 }
 
@@ -2297,7 +3286,7 @@ $tabBar.Add_MouseClick({
 
 $cardClients = New-Card
 $slotPanel = New-Object Windows.Forms.Panel
-$slotPanel.BackColor = $cCard
+$slotPanel.BackColor = $cBg
 Set-DoubleBuffered $slotPanel
 $slotPanel.AllowDrop = $true
 $cardClients.Controls.Add($slotPanel)
@@ -2311,7 +3300,12 @@ function Add-Hit([string]$list, $rect, [string]$act, [int]$idx = -1) {
 $slotPanel.Add_Paint({
     param($s, $e)
     $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'
-    $g.Clear($cCard)
+    # 카드 전체를 덮는 패널이라 다른 카드와 같은 둥근 모서리·테두리를 직접 그림 (바깥은 바탕색)
+    $g.Clear($cBg)
+    $cgp = Get-RoundPath 0.5 0.5 ($s.Width - 2) ($s.Height - 2) (S 8)
+    $cbr = New-Object Drawing.SolidBrush($cCard); $cpn = New-Object Drawing.Pen($cBorder, 1)
+    $g.FillPath($cbr, $cgp); $g.DrawPath($cpn, $cgp)
+    $cbr.Dispose(); $cpn.Dispose(); $cgp.Dispose()
     $script:slotHits = @()
     $w = $s.Width; $hdrH = S 46
     $cl = @($script:clients); $cnt = $cl.Count
@@ -2320,8 +3314,11 @@ $slotPanel.Add_Paint({
     $expanded = Test-SlotsExpanded
     $aw = (S 130)
     $rA = Rc ($w - (S 16) - $aw) (S 10) $aw (S 26)
-    $addFore = $cAccent; if ($cnt -ge $MaxClients) { $addFore = $cDash }
-    Draw-MiniBtn $g $rA '＋ 클라이언트 추가' $addFore $cDash
+    if ($cnt -ge $MaxClients) { Draw-MiniBtn $g $rA '＋ 클라이언트 추가' $cDash $cDash }
+    else {
+        Draw-Round $g $rA $cAccent $null 1 $false (S 6)
+        Draw-Txt $g '＋ 클라이언트 추가' $fontSmall (Rc ($rA.X + (S 1)) $rA.Y $rA.Width $rA.Height) ([Drawing.Color]::White) 'HorizontalCenter,VerticalCenter,SingleLine,NoPadding'
+    }
     Add-Hit 'slot' $rA 'add'
     $rG = Rc ($rA.X - (S 8) - (S 140)) (S 10) (S 140) (S 26)
     $gFore = $cAccent; if (Test-SyncNeeded) { $gFore = $cDanger }
@@ -2338,7 +3335,7 @@ $slotPanel.Add_Paint({
             $syncSt = ''
             if (-not $isSrc) { $syncSt = [string]$script:csync[$c.Path] }
             if ($isSrc) { Draw-Round $g $r (RGB 244 249 255) $cAccent 1.5 $false (S 10) }
-            elseif ($syncSt -eq 'need') { Draw-Round $g $r $cNeedFill $cNeedLine 1.5 $false (S 10) }
+            elseif ($syncSt -eq 'need' -or $syncSt -eq 'update' -or $syncSt -eq 'newer') { Draw-Round $g $r $cNeedFill $cNeedLine 1.5 $false (S 10) }
             else { Draw-Round $g $r $cCard $cBorder 1 $false (S 10) }
             # 배지
             $bc = $cOk; $bt = '링크'; if ($isSrc) { $bc = $cAccent; $bt = '원본' }
@@ -2346,10 +3343,13 @@ $slotPanel.Add_Paint({
             $bx2 = $x + (S 12) + $bw1 + (S 6)
             if ($isSrc) {
                 $sver = $script:cver[$c.Path]
-                if ($sver) { [void](Draw-Badge $g $bx2 ($hdrH + (S 10)) $sver.Content $cAccent (S 46)) }
+                $bx3 = $bx2
+                if ($sver) { $bw2 = Draw-Badge $g $bx2 ($hdrH + (S 10)) $sver.Content $cAccent (S 46); $bx3 = $bx2 + $bw2 + (S 6) }
             } else {
-                [void](Draw-Badge $g $bx2 ($hdrH + (S 10)) (Get-SyncText $syncSt) (Get-SyncColor $syncSt) (S 46))
+                $bw2 = Draw-Badge $g $bx2 ($hdrH + (S 10)) (Get-SyncText $syncSt) (Get-SyncColor $syncSt) (S 46)
+                $bx3 = $bx2 + $bw2 + (S 6)
             }
+            if ($c.Kind) { [void](Draw-Badge $g $bx3 ($hdrH + (S 10)) ([string]$c.Kind) (RGB 120 96 190) (S 46)) }
             # 이름 + 수정
             $nmW = [Windows.Forms.TextRenderer]::MeasureText($c.Name, $fontTitle).Width
             $maxNm = $slotW - (S 24) - (S 70)
@@ -2369,7 +3369,7 @@ $slotPanel.Add_Paint({
             $lOk = [bool]($st -and $st.Launcher)
             $eOk = [bool]($st -and $st.Exe -and -not $isLinkSt)
             $t1 = '✖ 런처'; $k1 = $cDanger; if ($lOk) { $t1 = '✔ 런처'; $k1 = $cOk }
-            $t2 = '✖ 구성 파일'; $k2 = $cDanger; if ($eOk) { $t2 = '✔ 구성 파일'; $k2 = $cOk }
+            $t2 = '✖ 클라이언트'; $k2 = $cDanger; if ($st -and $st.Exe) { $t2 = '✔ 클라이언트'; $k2 = $cOk }
             $w1s = [Windows.Forms.TextRenderer]::MeasureText($t1 + '      ', $fontSmall).Width
             Draw-Txt $g $t1 $fontSmall (Rc ($x + (S 12)) ($hdrH + (S 130)) $w1s (S 18)) $k1 'Left,VerticalCenter,SingleLine'
             Draw-Txt $g $t2 $fontSmall (Rc ($x + (S 12) + $w1s) ($hdrH + (S 130)) ($slotW - (S 24) - $w1s) (S 18)) $k2 'Left,VerticalCenter,SingleLine'
@@ -2470,10 +3470,11 @@ $gridPanel.Add_Paint({
     $n = $gd.Cols.Count
     $colW = [int](($w - $labW) / $n)
     Draw-Txt $g '폴더' $fontBase (Rc (S 8) (S 4) ($labW - (S 8)) (S 30)) $cSub 'Left,VerticalCenter,SingleLine'
-    # 동기화가 필요한 클라이언트 열: 머리부터 마지막 칸까지 연한 빨강 배경 (칸 색은 그대로)
+    # 동기화 필요·업데이트 클라이언트 열: 머리부터 마지막 칸까지 연한 빨강 배경 (칸 색은 그대로)
     for ($ci = 0; $ci -lt $n; $ci++) {
         $col = $gd.Cols[$ci]
-        if ($col.Role -ne 'src' -and [string]$script:csync[$col.Path] -eq 'need') {
+        $ssx = [string]$script:csync[$col.Path]
+        if ($col.Role -ne 'src' -and ($ssx -eq 'need' -or $ssx -eq 'update' -or $ssx -eq 'newer')) {
             Draw-Round $g (Rc ($labW + $ci * $colW + (S 1)) 0 ($colW - (S 2)) ($headH + @($Items).Count * $rowH)) $cNeedFill $cNeedBand 1 $false (S 10)
         }
     }
@@ -2481,19 +3482,22 @@ $gridPanel.Add_Paint({
         $col = $gd.Cols[$ci]
         $x = $labW + $ci * $colW
         $nameW = $colW - (S 40) - (S 70)
+        $cst = $script:cstate[$col.Path]
+        $hasL = [bool]($cst -and $cst.Launcher)
+        $lc = $cDash; if ($hasL) { $lc = $cAccent }
+        $lrect = Rc ($x + $colW - (S 12) - (S 70)) (S 4) (S 70) (S 30)
+        Draw-Txt $g '런처 실행' $fontSmall $lrect $lc 'Right,VerticalCenter,SingleLine'
+        if ($hasL) { Add-Hit 'grid' (Rc ($x + $colW - (S 76)) 0 (S 76) (S 36)) 'launch' $ci }
         if ($col.Role -eq 'src') {
-            Draw-Txt $g $col.Name $fontBold (Rc ($x + (S 8)) (S 4) ($colW - (S 16)) (S 30)) $cText
+            Draw-Txt $g $col.Name $fontBold (Rc ($x + (S 8)) (S 4) ($colW - (S 16) - (S 70)) (S 30)) $cText
         } else {
             $pick = @(Get-GroupPick (Get-ColCells $ci))
             $all = Test-AllSelected $pick
             $rb = Rc ($x + (S 8)) (S 10) (S 18) (S 18)
             if ($pick.Count -gt 0) { Draw-Check $g $rb $all } else { Draw-Round $g $rb (RGB 242 242 242) (RGB 205 205 205) 1.5 $false (S 4) }
             Draw-Txt $g $col.Name $fontBold (Rc ($x + (S 32)) (S 4) $nameW (S 30)) $cText
-            if ($pick.Count -gt 0) {
-                $t = '전체 선택'; if ($all) { $t = '전체 선택됨' }
-                Draw-Txt $g $t $fontSmall (Rc ($x + $colW - (S 12) - (S 70)) (S 4) (S 70) (S 30)) $cAccent 'Right,VerticalCenter,SingleLine'
-                Add-Hit 'grid' (Rc $x 0 $colW (S 36)) 'col' $ci
-            }
+            if ($pick.Count -gt 0) { Add-Hit 'grid' (Rc $x 0 ($colW - (S 76)) (S 36)) 'col' $ci }
+            elseif ([string]$script:csync[$col.Path] -eq 'newer') { Add-Hit 'grid' (Rc $x 0 ($colW - (S 76)) (S 36)) 'blocked' $ci }
         }
     }
     for ($ci = 0; $ci -lt $n; $ci++) {
@@ -2519,6 +3523,10 @@ $gridPanel.Add_Paint({
         $rb = Rc (S 8) ($y + (S 10)) (S 18) (S 18)
         if ($pick.Count -gt 0) { Draw-Check $g $rb $all } else { Draw-Round $g $rb (RGB 242 242 242) (RGB 205 205 205) 1.5 $false (S 4) }
         Draw-Txt $g $it.Key $fontBold (Rc (S 32) ($y + (S 6)) ($labW - (S 40)) (S 26)) $cText
+        if ($it.Quality) {
+            $kw = [Windows.Forms.TextRenderer]::MeasureText($it.Key, $fontBold, (New-Object Drawing.Size(1000, 30)), [Windows.Forms.TextFormatFlags]'NoPadding').Width
+            Draw-Txt $g ('(' + $it.Quality + ')') $fontSmall (Rc ((S 32) + $kw + (S 6)) ($y + (S 6)) ($labW - (S 40) - $kw - (S 6)) (S 26)) $cSub
+        }
         $subp = $it.Sub -replace '^Client\\', ''
         Draw-Txt $g $subp $fontSmall (Rc (S 32) ($y + (S 32)) ($labW - (S 40)) (S 20)) $cSub
         if ($pick.Count -gt 0) { Add-Hit 'grid' (Rc 0 $y $labW $rowH) 'row' -1; $script:gridHits[$script:gridHits.Count - 1].K = $it.Key }
@@ -2539,6 +3547,8 @@ $gridPanel.Add_Paint({
                 Draw-Check $g (Rc ($r.Right - (S 28)) ($r.Y + (S 8)) (S 16) (S 16)) $selected
                 Add-Hit 'grid' $r 'cell' $ci
                 $script:gridHits[$script:gridHits.Count - 1].K = $it.Key
+            } elseif ($cell.Block) {
+                Add-Hit 'grid' $r 'blocked' $ci
             }
         }
         $ri++
@@ -2600,7 +3610,22 @@ function Build-Grid {
         $script:cver[$c.Path] = $ver
         if ($c.Role -ne 'src') {
             $lk = [bool]($srcOk -and $exeOk -and (Test-LinkedToSource $ss.Game $st.Game))
-            $script:csync[$c.Path] = $(if ($lk) { Get-SyncState $srcVer $ver } else { 'unknown' })
+            $script:csync[$c.Path] = 'unknown'
+            if ($lk) { $script:csync[$c.Path] = Get-SyncState $srcVer $ver }
+            elseif ($srcOk -and $exeOk) {
+                # 링크가 없는 클라이언트: 설정 파일 버전과 launcherDownload\common 의 실제 설치 버전을 교차 확인한다.
+                # (동기화 후 링크를 해제하며 백업을 복원하면 설정은 최신인데 내용이 있는 폴더는 옛 버전일 수 있음 → 낮은 쪽을 기준으로 본다)
+                $effVer = $ver
+                try {
+                    $rv = Get-PackVersion $st.Game
+                    if ($rv -and $ver -and ($rv.Major -lt $ver.Major -or ($rv.Major -eq $ver.Major -and $rv.Minor -lt $ver.Minor))) { $effVer = $rv }
+                } catch { }
+                $ss2 = Get-SyncState $srcVer $effVer
+                if ($ss2 -eq 'need') {
+                    $script:csync[$c.Path] = 'update'
+                    if ($effVer -and $srcVer -and (([version]$effVer.Content) -gt ([version]$srcVer.Content))) { $script:csync[$c.Path] = 'newer' }   # 원본보다 높음: 원본을 먼저 업데이트
+                } elseif ($ss2 -eq 'ok') { $script:csync[$c.Path] = 'current' }
+            }   # 링크 없음 + 버전 낮음(다름): 해당 런처에서 직접 업데이트
         }
         $cells = @{}
         foreach ($it in $Items) {
@@ -2615,13 +3640,16 @@ function Build-Grid {
                 if ($srcOk) { $sp = Join-Path $ss.Game $it.Sub; $si = $srcInfo[$it.Key] }
                 $ck = Get-CellKind $si $li $sp $exeOk
                 $kind = $ck.Kind; $act = $ck.Act
+                $blk = $false
+                if ($act -eq 'conn' -and [string]$script:csync[$c.Path] -eq 'newer') { $act = ''; $blk = $true }   # 원본보다 높은 버전: 연결 불가
                 if ($kind -eq 'real') { $stat = Get-DirStat (Join-Path $st.Game $it.Sub) }
                 if ($kind -eq 'ok' -and $srcStat[$it.Key]) { $saved += $srcStat[$it.Key].Bytes }
             }
             if ($kind -in @('broken', 'other', 'srclink', 'bad')) { $check++ }
             if ($kind -eq 'broken') { $broken++ }
             $lab = Get-CellLabel $kind $li $stat $srcOk
-            $cells[$it.Key] = @{ Kind = $kind; Act = $act; Title = $lab.Title; Sub = $lab.Sub; Bytes = $(if ($stat) { $stat.Bytes } else { [long]0 }) }
+            if ($blk) { $lab.Sub = '연결 불가 · 원본보다 높은 버전' }
+            $cells[$it.Key] = @{ Kind = $kind; Act = $act; Block = $blk; Title = $lab.Title; Sub = $lab.Sub; Bytes = $(if ($stat) { $stat.Bytes } else { [long]0 }) }
             if ($exeOk) { $backups += @(Get-ItemBackups $st.Game $it).Count }
         }
         $cols += @{ Idx = $idx; Name = $c.Name; Role = $c.Role; Path = $c.Path; ExeOk = $exeOk; Cells = $cells }
@@ -2755,16 +3783,48 @@ function New-DlgLabel([string]$text, $color = $null) {
     return $l
 }
 
+# 앱 스타일 한 줄 입력칸: 둥근 테두리(포커스 시 파란색) 안에 테두리 없는 TextBox 를 넣음. 반환: TextBox
+function New-InputBox($dg, [string]$text, [int]$max, $x, $y, $w, $h) {
+    $pnl = New-Object Windows.Forms.Panel
+    $pnl.BackColor = $cCard; $pnl.Cursor = 'IBeam'
+    Set-DoubleBuffered $pnl
+    $txt = New-Object Windows.Forms.TextBox
+    $txt.BorderStyle = 'None'; $txt.BackColor = $cCard; $txt.ForeColor = $cText; $txt.Font = $fontBase
+    $txt.Text = $text; $txt.MaxLength = $max
+    $pnl.Tag = @{ Txt = $txt }
+    $pnl.Controls.Add($txt)
+    [void](Add-DlgControl $dg $pnl $x $y $w $h)
+    $lay = {
+        param($s, $e)
+        $t = $s.Tag.Txt
+        $t.Width = [Math]::Max(10, $s.Width - (S 20))
+        $t.Location = New-Object Drawing.Point((S 10), [Math]::Max(0, [int](($s.Height - $t.PreferredHeight) / 2)))
+    }
+    $pnl.Add_SizeChanged($lay)
+    & $lay $pnl $null
+    $pnl.Add_Paint({
+        param($s, $e)
+        $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'
+        $g.Clear($s.Parent.BackColor)
+        $line = $cBorder; $lw = 1
+        if ($s.Tag.Txt.Focused) { $line = $cAccent; $lw = 1.5 }
+        Draw-Round $g (Rc 0 0 $s.Width $s.Height) $cCard $line $lw $false (S 8)
+    })
+    $pnl.Add_Click({ param($s, $e) $s.Tag.Txt.Focus() })
+    $txt.Tag = $pnl
+    $txt.Add_Enter({ param($s, $e) $s.Tag.Invalidate() })
+    $txt.Add_Leave({ param($s, $e) $s.Tag.Invalidate() })
+    return $txt
+}
+
 # 이름 입력 (취소하면 $null). $taken = 이미 사용 중인 이름
 function Show-NameDialog([string]$title, [string]$prompt, [string]$default, [string[]]$taken) {
     $dg = New-DialogForm $title 420 170
     $script:nd = @{ Result = $null; Taken = $taken; Form = $dg }
     [void](Add-DlgControl $dg (New-DlgLabel $prompt) 16 16 388 22)
-    $script:nd.Txt = New-Object Windows.Forms.TextBox
-    $script:nd.Txt.Text = $default; $script:nd.Txt.MaxLength = 20
-    [void](Add-DlgControl $dg $script:nd.Txt 16 46 388 26)
-    $btnOk = New-Object Windows.Forms.Button; $btnOk.Text = '확인'
-    $btnCancel = New-Object Windows.Forms.Button; $btnCancel.Text = '취소'
+    $script:nd.Txt = New-InputBox $dg $default 20 16 44 388 30
+    $btnOk = New-Button '확인' $true $dg
+    $btnCancel = New-Button '취소' $false $dg
     [void](Add-DlgControl $dg $btnOk 188 108 100 34)
     [void](Add-DlgControl $dg $btnCancel 304 108 100 34)
     $dg.AcceptButton = $btnOk; $dg.CancelButton = $btnCancel
@@ -2781,49 +3841,95 @@ function Show-NameDialog([string]$title, [string]$prompt, [string]$default, [str
     return $script:nd.Result
 }
 
+# 이름·종류 수정 창. 반환: @{ Name; Kind } 또는 $null
+function Show-ClientEditDialog($c, [string[]]$taken) {
+    $dg = New-DialogForm '이름·종류 수정' 440 250
+    $script:ed = @{ Result = $null; Taken = $taken; Form = $dg }
+    [void](Add-DlgControl $dg (New-DlgLabel ('[{0}] 의 새 이름' -f $c.Name)) 16 14 400 22)
+    $script:ed.Txt = New-InputBox $dg $c.Name 20 16 40 400 30
+    [void](Add-DlgControl $dg (New-DlgLabel '런처 종류') 16 82 400 22)
+    $script:ed.Kr = New-KindRadios $dg 16 108 ([string]$c.Kind)
+    $auto = Get-KRKindAuto $c.Path
+    $h = '자동 판정 불가 (런처 설정·기록 없음)'; if ($auto) { $h = '자동 판정: ' + $auto + ' (' + (Get-KRKindSrcText $c.Path) + ')' }
+    $hl = New-DlgLabel $h $cSub; $hl.Font = $fontSmall
+    [void](Add-DlgControl $dg $hl 16 138 400 20)
+    $btnOk = New-Button '확인' $true $dg
+    $btnCancel = New-Button '취소' $false $dg
+    [void](Add-DlgControl $dg $btnOk 208 170 100 34)
+    [void](Add-DlgControl $dg $btnCancel 324 170 100 34)
+    $dg.AcceptButton = $btnOk; $dg.CancelButton = $btnCancel
+    $btnOk.Add_Click({
+        $n = $script:ed.Txt.Text.Trim()
+        if (-not $n) { [void][Windows.Forms.MessageBox]::Show($script:ed.Form, '이름을 입력해 주세요.', '이름', 'OK', 'Information'); return }
+        if ($script:ed.Taken | Where-Object { $_ -ieq $n }) { [void][Windows.Forms.MessageBox]::Show($script:ed.Form, '이미 사용 중인 이름입니다.', '이름', 'OK', 'Information'); return }
+        $script:ed.Result = @{ Name = $n; Kind = (Get-KindFromRadios $script:ed.Kr) }
+        $script:ed.Form.DialogResult = [Windows.Forms.DialogResult]::OK
+    })
+    $dg.Add_Shown({ $script:ed.Txt.Focus(); $script:ed.Txt.SelectAll() })
+    [void]$dg.ShowDialog($form)
+    $dg.Dispose()
+    return $script:ed.Result
+}
+
 # 등록 대화상자: 이름과 역할을 정한다. $entries = @(@{ Path; Suggest = 'src'|'link' })
 # 반환: @(@{ Path; Name; Role }) 또는 $null
 function Show-RegisterDialog($entries) {
     $entries = @($entries)
     $hasSrc = (@($script:clients | Where-Object { $_.Role -eq 'src' }).Count -gt 0)
-    $rowH = 116
-    $dg = New-DialogForm '클라이언트 이름 정하기' 580 (60 + $rowH * $entries.Count + 64)
+    $rowH = 164
+    $dg = New-DialogForm '클라이언트 속성 정하기' 580 (60 + $rowH * $entries.Count + 64)
     $script:rd = @{ Result = $null; Form = $dg; Rows = @(); HasSrc = $hasSrc }
-    $lbl = New-DlgLabel '이름은 직접 정합니다. 등록 후 [✎ 수정]으로 바꿀 수 있습니다.' $cSub
+    $lbl = New-DlgLabel '이름 및 속성을 정합니다. 등록 후 [✎ 수정]으로 바꿀 수 있습니다.' $cSub
     [void](Add-DlgControl $dg $lbl 16 12 548 22)
     $taken = @($script:clients | ForEach-Object { $_.Name })
     $y = 40
     foreach ($en in $entries) {
-        $box = New-Object Windows.Forms.GroupBox
-        $box.Text = ''
+        $box = New-Object Windows.Forms.Panel
+        $box.BackColor = $cCard   # 안에 놓이는 라디오·패널이 흰 카드 색을 물려받도록 (기본은 대화상자 회색)
+        Set-DoubleBuffered $box
+        $box.Add_Paint({
+            param($p, $e)
+            $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'
+            $g.Clear($p.Parent.BackColor)
+            Draw-Round $g (Rc 0 0 $p.Width $p.Height) $cCard $cBorder 1 $false (S 10)
+        })
         [void](Add-DlgControl $dg $box 16 $y 548 ($rowH - 8))
         $lp = New-DlgLabel $en.Path $cText; $lp.Font = $fontBold; $lp.AutoEllipsis = $true
         [void](Add-DlgControl $box $lp 12 12 524 22)
         [void](Add-DlgControl $box (New-DlgLabel '이름') 12 46 50 22)
+        $kAuto = Get-KRKindAuto $en.Path
         $nm = Get-DefaultName $taken
+        if ($kAuto -and -not ($taken | Where-Object { $_ -ieq $kAuto })) { $nm = $kAuto }
         $taken += $nm
-        $txt = New-Object Windows.Forms.TextBox; $txt.Text = $nm; $txt.MaxLength = 20
-        [void](Add-DlgControl $box $txt 66 42 220 26)
+        $txt = New-InputBox $box $nm 20 66 40 220 30
         $pn = New-Object Windows.Forms.Panel
+        $pn.BackColor = $cCard
         [void](Add-DlgControl $box $pn 300 38 236 34)
         $rbL = New-Object Windows.Forms.RadioButton; $rbL.Text = '링크 대상'
         $rbS = New-Object Windows.Forms.RadioButton; $rbS.Text = '원본'
         [void](Add-DlgControl $pn $rbL 0 4 100 26)
         [void](Add-DlgControl $pn $rbS 108 4 120 26)
         $stx = Get-State $en.Path
-        $canSrc = [bool]($stx -and $stx.Launcher -and $stx.Exe -and (@(Get-LinkedFixed $stx.Game).Count -eq 0))
+        $verOk = [bool]($stx -and $stx.Exe -and (Get-ClientVersion $stx.Game))
+        $canSrc = [bool]($stx -and $stx.Launcher -and $stx.Exe -and $verOk -and (@(Get-LinkedFixed $stx.Game).Count -eq 0))
         if ($hasSrc -or -not $canSrc) { $rbS.Enabled = $false; $rbL.Checked = $true }
         elseif ($en.Suggest -eq 'src') { $rbS.Checked = $true } else { $rbL.Checked = $true }
+        [void](Add-DlgControl $box (New-DlgLabel '런처 종류') 12 80 70 22)
+        $kr = New-KindRadios $box 86 76 $kAuto
+        $kh = '자동 판정 불가 · 직접 선택하세요 (런처 설정·기록 없음)'; if ($kAuto) { $kh = '자동 판정: ' + $kAuto + ' (' + (Get-KRKindSrcText $en.Path) + ')' }
         $hint = New-DlgLabel '' $cSub; $hint.Font = $fontSmall
         if ($hasSrc) { $hint.Text = '원본은 이미 등록되어 있습니다. 바꾸려면 기존 원본을 [제거]한 뒤 등록하세요.' }
-        elseif (-not $canSrc) { $hint.Text = '런처와 구성 파일이 모두 있고 실제 폴더를 가진 클라이언트만 원본이 될 수 있습니다.' }
+        elseif ($stx -and $stx.Exe -and -not $verOk) { $hint.Text = '버전 정보를 확인할 수 없는 클라이언트는 원본이 될 수 없습니다.' }
+        elseif (-not $canSrc) { $hint.Text = '런처와 클라이언트가 모두 있고 실제 폴더를 가진 클라이언트만 원본이 될 수 있습니다.' }
         else { $hint.Text = '원본은 1개만 지정할 수 있습니다. 링크가 가리킬 실제 파일이 있는 클라이언트입니다.' }
-        [void](Add-DlgControl $box $hint 12 80 524 20)
-        $script:rd.Rows += @{ Path = $en.Path; Txt = $txt; RbSrc = $rbS }
+        [void](Add-DlgControl $box $hint 12 106 524 22)
+        $kl2 = New-DlgLabel $kh $cSub; $kl2.Font = $fontSmall
+        [void](Add-DlgControl $box $kl2 12 130 524 22)
+        $script:rd.Rows += @{ Path = $en.Path; Txt = $txt; RbSrc = $rbS; Kr = $kr }
         $y += $rowH
     }
-    $btnOk = New-Object Windows.Forms.Button; $btnOk.Text = '등록'
-    $btnCancel = New-Object Windows.Forms.Button; $btnCancel.Text = '취소'
+    $btnOk = New-Button '등록' $true $dg
+    $btnCancel = New-Button '취소' $false $dg
     [void](Add-DlgControl $dg $btnOk 348 ($y + 8) 100 34)
     [void](Add-DlgControl $dg $btnCancel 464 ($y + 8) 100 34)
     $dg.AcceptButton = $btnOk; $dg.CancelButton = $btnCancel
@@ -2836,9 +3942,19 @@ function Show-RegisterDialog($entries) {
             if ($script:clients | Where-Object { $_.Name -ieq $n }) { [void][Windows.Forms.MessageBox]::Show($script:rd.Form, ('이미 사용 중인 이름입니다: ' + $n), '등록', 'OK', 'Information'); return }
             $names += $n
             $role = 'link'; if ($r.RbSrc.Checked) { $role = 'src'; $srcCnt++ }
-            $res += @{ Path = $r.Path; Name = $n; Role = $role }
+            $res += @{ Path = $r.Path; Name = $n; Role = $role; Kind = (Get-KindFromRadios $r.Kr) }
         }
         if ($srcCnt -gt 1) { [void][Windows.Forms.MessageBox]::Show($script:rd.Form, '원본은 1개만 지정할 수 있습니다.', '등록', 'OK', 'Information'); return }
+        $kinds = @(); foreach ($c in $script:clients) { if ($c.Kind) { $kinds += [string]$c.Kind } }
+        foreach ($x in $res) {
+            if ($x.Kind -and ($kinds -contains $x.Kind)) {
+                $akm = (('종류 [{0}] 은(는) 이미 등록되었거나 중복 선택되었습니다.' + "`r`n" + '같은 종류의 클라이언트가 둘 이상이면 서로 섞일 수 있습니다. 그래도 등록할까요?') -f $x.Kind)
+                $ak = [Windows.Forms.MessageBox]::Show($script:rd.Form, $akm, '종류 중복', 'YesNo', 'Warning', 'Button2')
+                if ($ak -ne 'Yes') { return }
+                break
+            }
+            if ($x.Kind) { $kinds += $x.Kind }
+        }
         $script:rd.Result = $res
         $script:rd.Form.DialogResult = [Windows.Forms.DialogResult]::OK
     })
@@ -2848,15 +3964,21 @@ function Show-RegisterDialog($entries) {
 }
 
 # 등록 처리 (슬롯 수 확인 → 이름/역할 정하기 → 저장)
-function Start-Register($paths, $suggest) {
+function Start-Register($paths, $suggest, [bool]$fromScan = $false) {
     $left = $MaxClients - $script:clients.Count
     if ($left -le 0) { Show-Warn ('클라이언트는 최대 {0}개까지 등록할 수 있습니다. 먼저 [제거]로 자리를 비워 주세요.' -f $MaxClients) '알림'; return $false }
     $entries = @()
     foreach ($p in $paths) {
         $st = Get-State $p
-        if (-not $st -or -not ($st.Launcher -or $st.Exe)) { Show-Warn ("명조 클라이언트(launcher.exe 또는 구성 파일)를 찾을 수 없습니다:`r`n" + $p) '알림'; continue }
+        if (-not $st -or -not ($st.Launcher -or $st.Exe)) { Show-Warn ("명조 클라이언트(launcher.exe 또는 Wuthering Waves.exe)를 찾을 수 없습니다:`r`n" + $p) '알림'; continue }
         if ($script:clients | Where-Object { (Get-NormPath $_.Path) -ieq (Get-NormPath $st.Root) }) { Show-Warn ("이미 등록된 클라이언트입니다:`r`n" + $st.Root) '알림'; continue }
+        if ($st.Exe -and -not (Get-ClientVersion $st.Game)) { Show-Warn (("버전 정보를 확인할 수 없습니다 ({0}).`r`n`r`n확인할 파일:`r`n" -f (Get-VersionWhy $st.Game)) + (Join-Path $st.Game 'launcherDownloadConfig.json')) '알림'; continue }
         if ($entries | Where-Object { $_.Path -ieq $st.Root }) { continue }
+        # 이미 등록된 클라이언트나 이번에 함께 고른 클라이언트와 폴더가 서로 포함 관계이면 등록하지 않는다 (링크가 자기 자신을 가리키게 됨)
+        $nest = $null
+        foreach ($oc in $script:clients) { if (-not $nest -and (Test-Nested $oc.Path $st.Root)) { $nest = $oc.Name } }
+        foreach ($oe in $entries) { if (-not $nest -and (Test-Nested $oe.Path $st.Root)) { $nest = $oe.Path } }
+        if ($nest) { Show-Warn (("등록하려는 폴더가 '{0}' 와(과) 서로 포함 관계입니다. 클라이언트 폴더끼리는 겹칠 수 없습니다:`r`n" -f $nest) + $st.Root) '알림'; continue }
         $sg = 'link'
         if ($suggest -and $suggest[$st.Root]) { $sg = $suggest[$st.Root] }
         $entries += @{ Path = $st.Root; Suggest = $sg }
@@ -2868,12 +3990,40 @@ function Start-Register($paths, $suggest) {
     }
     $res = Show-RegisterDialog $entries
     if (-not $res) { return $false }
-    foreach ($r in $res) { $script:clients += @{ Name = $r.Name; Path = $r.Path; Role = $r.Role } }
+    # 탐색 창과 같은 기준: 원본과 버전이 달라 링크할 수 없는 클라이언트는 한 번 더 확인
+    $srcG = ''
+    $sx = @($res | Where-Object { $_.Role -eq 'src' })
+    if ($sx.Count -gt 0) { $s0 = Get-State $sx[0].Path; if ($s0) { $srcG = $s0.Game } }
+    else { foreach ($c in $script:clients) { if ($c.Role -eq 'src') { $s0 = Get-State $c.Path; if ($s0) { $srcG = $s0.Game } } } }
+    $forcedLower = $false
+    if ($srcG) {
+        $keep = @()
+        foreach ($r in $res) {
+            if ($r.Role -ne 'link') { $keep += $r; continue }
+            $d0 = Get-State $r.Path
+            $cau = $null
+            if ($d0 -and $d0.Exe -and (@(Get-LinkedFixed $d0.Game).Count -eq 0)) { $cau = Get-RegCaution $srcG $d0.Game }
+            if ($cau) {
+                # 탐색 창에서 고른 항목은 체크할 때 이미 확인했으므로 다시 묻지 않는다
+                if (-not $fromScan) {
+                    $ca = [Windows.Forms.MessageBox]::Show($form, ($r.Name + "`r`n" + $cau.Msg), [string]$cau.Tag, 'YesNo', 'Warning', 'Button2')
+                    if ($ca -ne 'Yes') { Log ('[등록 취소] {0}  ({1})  {2}' -f $r.Name, $cau.Tag, $r.Path); continue }
+                }
+                if ($cau.Tag -eq '업데이트 필요') { $forcedLower = $true }
+            }
+            $keep += $r
+        }
+        $res = @($keep)
+        if ($res.Count -eq 0) { return $false }
+    }
+    foreach ($r in $res) { $script:clients += @{ Name = $r.Name; Path = $r.Path; Role = $r.Role; Kind = [string]$r.Kind } }
     $script:clients = @(Sort-Clients $script:clients)
     [void](Save-AppSettings)
-    foreach ($r in $res) { Log ('[등록] {0}  ({1})  {2}' -f $r.Name, $(if ($r.Role -eq 'src') { '원본' } else { '링크 대상' }), $r.Path) }
+    foreach ($r in $res) { Log ('[등록] {0}  ({1}){2}  {3}' -f $r.Name, $(if ($r.Role -eq 'src') { '원본' } else { '링크 대상' }), $(if ($r.Kind) { ' · ' + $r.Kind } else { '' }), $r.Path) }
     $script:sel = @{}
     if ($script:tab -eq 'manage') { Refresh-Manage }
+    # 원본보다 낮은 버전을 새로 등록한 경우: [업데이트 후 동기화] 순서 안내창을 띄운다 (탐색 창이 열려 있으면 닫힌 뒤에 띄움)
+    if ($forcedLower) { if ($fromScan) { $script:pendingGuide = $true } else { $script:gwSeenUpd = $true; Show-GuideWindow $true 'update' } }
     return $true
 }
 
@@ -2896,12 +4046,19 @@ function Offer-Register([string]$srcRoot, [string]$dstRoot) {
 function Show-ScanDialog([string]$Mode = 'register', [string]$BaseGame = '', [bool]$NeedReal = $false) {
     $ttl = '클라이언트 탐색'
     $dg = New-DialogForm $ttl 880 624
-    $sd = @{ Mode = $Mode; BaseGame = $BaseGame; NeedReal = $NeedReal; Picked = $null; Form = $dg; Rows = @(); Seen = @{}; Scroll = 0; Scanning = $false; Cancel = $false; CloseAfter = $false; Registered = $false }
+    $sd = @{ Mode = $Mode; BaseGame = $BaseGame; NeedReal = $NeedReal; Picked = $null; Form = $dg; Rows = @(); Seen = @{}; Scroll = 0; Scanning = $false; Cancel = $false; CloseAfter = $false; Registered = $false; SbDrag = $false; SbY = 0; SbS = 0 }
     $script:sd = $sd
 
-    $sd.Notice = New-Object Windows.Forms.Label
-    $sd.Notice.BackColor = (RGB 238 245 253); $sd.Notice.ForeColor = (RGB 18 74 133); $sd.Notice.TextAlign = 'MiddleLeft'
-    $sd.Notice.Padding = New-Object Windows.Forms.Padding((S 12), 0, 0, 0)
+    $sd.Notice = New-Object Windows.Forms.Panel
+    Set-DoubleBuffered $sd.Notice
+    $sd.Notice.Add_TextChanged({ param($p, $e) $p.Invalidate() })
+    $sd.Notice.Add_Paint({
+        param($p, $e)
+        $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'
+        $g.Clear($p.Parent.BackColor)
+        Draw-Round $g (Rc 0 0 $p.Width $p.Height) (RGB 238 245 253) (RGB 208 224 245) 1 $false (S 8)
+        Draw-Txt $g $p.Text $fontBase (Rc (S 12) 0 ($p.Width - (S 24)) $p.Height) (RGB 18 74 133) 'Left,VerticalCenter,SingleLine,EndEllipsis'
+    })
     [void](Add-DlgControl $dg $sd.Notice 16 12 848 34)
     $nt = '버전 오차가 있을 수 있습니다. 런처가 최신 버전인지 먼저 확인해 주세요.'
     if ($NeedReal) { $nt += "`r`n가능하면 최신 버전을 원본으로 지정해 주세요." }
@@ -2935,10 +4092,37 @@ function Show-ScanDialog([string]$Mode = 'register', [string]$BaseGame = '', [bo
     [void]$sd.CmbAcc.Items.AddRange(@('빠름', '보통', '정확'))
     $sd.CmbAcc.SelectedIndex = @{ 3 = 0; 5 = 1; 7 = 2 }[[int]$script:settings.Depth]
     [void](Add-DlgControl $dg $sd.CmbAcc 104 $ky 84 26)
+    $sd.CmbAcc.Visible = $false   # 선택값 보관용 (화면에는 아래 칩으로 표시)
+    $sd.AccChips = @()
+    for ($ai = 0; $ai -lt 3; $ai++) {
+        $ch = New-Object Windows.Forms.Panel
+        $ch.BackColor = $dg.BackColor; $ch.Cursor = 'Hand'
+        Set-DoubleBuffered $ch
+        $ch.Tag = @{ Idx = $ai; Text = @('빠름', '보통', '정확')[$ai] }
+        $ch.Add_Paint({
+            param($c, $e)
+            $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'
+            $on = ($script:sd.CmbAcc.SelectedIndex -eq [int]$c.Tag.Idx)
+            $g.Clear($c.Parent.BackColor)
+            $gp = Get-RoundPath 0.5 0.5 ($c.Width - 2) ($c.Height - 2) (S 6)
+            if ($on) { $fc = $cAccent; $lc = $cAccent; $tc = [Drawing.Color]::White } else { $fc = $cCard; $lc = $cBorder; $tc = $cText }
+            $br = New-Object Drawing.SolidBrush($fc); $pen = New-Object Drawing.Pen($lc, 1)
+            $g.FillPath($br, $gp); $g.DrawPath($pen, $gp); $br.Dispose(); $pen.Dispose(); $gp.Dispose()
+            $rc = New-Object Drawing.Rectangle(1, 0, $c.Width, $c.Height)
+            [Windows.Forms.TextRenderer]::DrawText($g, [string]$c.Tag.Text, $fontBase, $rc, $tc, [Windows.Forms.TextFormatFlags]'HorizontalCenter,VerticalCenter,SingleLine,NoPadding')
+        })
+        $ch.Add_Click({
+            param($c, $e)
+            $script:sd.CmbAcc.SelectedIndex = [int]$c.Tag.Idx
+            foreach ($o in $script:sd.AccChips) { $o.Invalidate() }
+        })
+        [void](Add-DlgControl $dg $ch (104 + $ai * 56) $ky 52 26)
+        $sd.AccChips += $ch
+    }
     $lbDr = New-DlgLabel '드라이브'; $lbDr.TextAlign = 'MiddleLeft'
-    [void](Add-DlgControl $dg $lbDr 216 $ky 76 26)
+    [void](Add-DlgControl $dg $lbDr 288 $ky 76 26)
     $sd.Drives = @()
-    $dx = 294
+    $dx = 366
     foreach ($d in @([IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' -and $_.IsReady })) {
         $cb = New-Object Windows.Forms.CheckBox; $cb.Text = $d.Name.TrimEnd('\'); $cb.AutoSize = $false; $cb.Checked = $true
         $cb.TextAlign = 'MiddleLeft'; $cb.CheckAlign = 'MiddleLeft'
@@ -2946,14 +4130,9 @@ function Show-ScanDialog([string]$Mode = 'register', [string]$BaseGame = '', [bo
         $sd.Drives += $cb
     }
 
-    $sd.BtnStart = New-Object Windows.Forms.Button; $sd.BtnStart.Text = '탐색 시작'
-    $sd.BtnStop = New-Object Windows.Forms.Button; $sd.BtnStop.Text = '중지'; $sd.BtnStop.Enabled = $false
+    $sd.BtnStart = New-Button '탐색 시작' $true $dg; $sd.BtnStart.Font = $fontBold
+    $sd.BtnStop = New-Button '중지' $false $dg; $sd.BtnStop.Enabled = $false
     # [탐색 시작] 은 파란 버튼, 오른쪽 위에 [중지] 와 나란히 배치
-    $sd.BtnStart.FlatStyle = 'Flat'; $sd.BtnStart.FlatAppearance.BorderSize = 0; $sd.BtnStart.Cursor = 'Hand'
-    $sd.BtnStart.Font = $fontBold; $sd.BtnStart.BackColor = $cAccent; $sd.BtnStart.ForeColor = [Drawing.Color]::White
-    $sd.BtnStart.Add_SizeChanged({ param($b, $e)
-        if ($b.Width -gt 0 -and $b.Height -gt 0) { $gp = Get-RoundPath 0 0 $b.Width $b.Height (S 8); $b.Region = New-Object Drawing.Region($gp); $gp.Dispose() } })
-    $sd.BtnStart.Add_EnabledChanged({ param($b, $e) if ($b.Enabled) { $b.BackColor = $cAccent; $b.ForeColor = [Drawing.Color]::White } else { $b.BackColor = (RGB 160 196 240); $b.ForeColor = [Drawing.Color]::White } })
     [void](Add-DlgControl $dg $sd.BtnStart 666 ($ky - 4) 110 34)
     [void](Add-DlgControl $dg $sd.BtnStop 784 ($ky - 4) 80 34)
     # 상태 줄: 처음(안내)에는 [탐색 시작] 버튼 그림이 들어간 문장, 탐색 중/후에는 일반 문장
@@ -2982,21 +4161,30 @@ function Show-ScanDialog([string]$Mode = 'register', [string]$BaseGame = '', [bo
     [void](Add-DlgControl $dg $sd.LblList 16 154 848 22)
 
     $sd.List = New-Object Windows.Forms.Panel
-    $sd.List.BackColor = $cCard; $sd.List.BorderStyle = 'FixedSingle'
+    $sd.List.BackColor = $cCard; $sd.List.BorderStyle = 'None'
+    $sd.List.Add_SizeChanged({ param($b, $e)
+        if ($b.Width -gt 0 -and $b.Height -gt 0) { $gp = Get-RoundPath 0 0 $b.Width $b.Height (S 10); $b.Region = New-Object Drawing.Region($gp); $gp.Dispose() } })
+    $sd.List.Add_Paint({ param($b, $e)
+        $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'
+        Draw-Round $g (Rc 0 0 $b.Width $b.Height) $null (RGB 205 210 218) 1 $false (S 10) })
     Set-DoubleBuffered $sd.List
     [void](Add-DlgControl $dg $sd.List 16 180 848 370)
 
-    $sd.BtnReg = New-Object Windows.Forms.Button; $sd.BtnReg.Text = '선택 항목 등록'; if ($Mode -eq 'pick') { $sd.BtnReg.Text = '이 폴더 선택' }
-    $btnClose = New-Object Windows.Forms.Button; $btnClose.Text = '닫기'
-    $sd.BtnReg.FlatStyle = 'Flat'; $sd.BtnReg.FlatAppearance.BorderSize = 0; $sd.BtnReg.Cursor = 'Hand'
-    $sd.BtnReg.Font = $fontBold; $sd.BtnReg.BackColor = $cAccent; $sd.BtnReg.ForeColor = [Drawing.Color]::White
-    $sd.BtnReg.Add_SizeChanged({ param($b, $e)
-        if ($b.Width -gt 0 -and $b.Height -gt 0) { $gp = Get-RoundPath 0 0 $b.Width $b.Height (S 8); $b.Region = New-Object Drawing.Region($gp); $gp.Dispose() } })
-    $sd.BtnReg.Add_EnabledChanged({ param($b, $e) if ($b.Enabled) { $b.BackColor = $cAccent; $b.ForeColor = [Drawing.Color]::White } else { $b.BackColor = (RGB 160 196 240); $b.ForeColor = [Drawing.Color]::White } })
+    $regText = '선택 항목 등록'; if ($Mode -eq 'pick') { $regText = '이 폴더 선택' }
+    $sd.BtnReg = New-Button $regText $true $dg; $sd.BtnReg.Font = $fontBold
+    $btnClose = New-Button '닫기' $false $dg
     [void](Add-DlgControl $dg $sd.BtnReg 16 564 150 38)
     [void](Add-DlgControl $dg $btnClose 748 564 116 38)
-    $sd.LblMsg = New-DlgLabel '' $cSub; $sd.LblMsg.AutoEllipsis = $true
-    [void](Add-DlgControl $dg $sd.LblMsg 182 573 556 22)
+    # 등록용 탐색 창에서만: 체크한 항목을 한 번에 모두 해제 (선택 창은 라디오라 해당 없음)
+    $sd.BtnClr = $null
+    $msgX = 182; $msgW = 556
+    if ($Mode -ne 'pick') {
+        $sd.BtnClr = New-Button '선택 모두 해제' $false $dg; $sd.BtnClr.Enabled = $false
+        [void](Add-DlgControl $dg $sd.BtnClr 182 564 130 38)
+        $msgX = 326; $msgW = 412
+    }
+    $sd.LblMsg = New-DlgLabel '' $cSub; $sd.LblMsg.AutoEllipsis = $false; $sd.LblMsg.TextAlign = 'MiddleLeft'
+    [void](Add-DlgControl $dg $sd.LblMsg $msgX 564 $msgW 40)
 
     if ($Mode -eq 'pick') {
         $sd.Notice.Visible = $false
@@ -3025,6 +4213,7 @@ function Show-ScanDialog([string]$Mode = 'register', [string]$BaseGame = '', [bo
         $script:sd.Notice.Text = ('ⓘ  클라이언트는 최대 {0}개(원본 1개 + 링크 {1}개)까지 등록·관리할 수 있습니다.     현재 등록 {2}개 · 추가 가능 {3}개' -f $MaxClients, ($MaxClients - 1), $script:clients.Count, $left)
         $cnt = @($script:sd.Rows | Where-Object { $_.Checked }).Count
         $script:sd.LblList.Text = ('찾은 클라이언트 {0}개   (체크한 항목을 등록 · 선택 {1}/{2})' -f $script:sd.Rows.Count, $cnt, $left)
+        if ($script:sd.BtnClr) { $script:sd.BtnClr.Enabled = ($cnt -gt 0) }
         $script:sd.List.Invalidate()
     }
     $script:sdRefreshRoles = {
@@ -3054,24 +4243,84 @@ function Show-ScanDialog([string]$Mode = 'register', [string]$BaseGame = '', [bo
                     }
                 }
             }
+            # 링크 탐색에서 원본이 아직 없으면 모든 행을 선택 불가로 둔다 (원본 지정 후 다시 판정)
+            $noSrc = [bool](-not $script:sd.NeedReal -and -not $script:sd.BaseGame)
+            $noSrcMsg = ''   # 설명 줄('원본을 먼저 지정 후 작업 가능')로 충분해 행 클릭 안내는 없음
+            $noSrcSub = '원본을 먼저 지정 후 작업 가능'
+            # 원본은 지정됐지만 원본의 버전을 읽을 수 없으면 이식 대상도 선택 불가
+            $srcBad = [bool]($script:sd.BaseGame -and -not (Get-ClientVersion $script:sd.BaseGame))
+            $srcBadMsg = ''; if ($srcBad) { $srcBadMsg = ("원본의 버전 정보를 확인할 수 없습니다 ({0}).`r`n`r`n확인할 파일:`r`n{1}" -f (Get-VersionWhy $script:sd.BaseGame), (Join-Path $script:sd.BaseGame 'launcherDownloadConfig.json')) }
             foreach ($r in $script:sd.Rows) {
                 $r.Role = ''; $r.Tag = ''; $r.Sub = ''; $r.Lvl = ''; $r.NoPick = $false
                 $r.NoPickMsg = ''
-                if ($script:sd.NeedReal -and $r.An -and $r.An.Linked) { $r.NoPick = $true; $r.NoPickMsg = '링크 상태라 실제 파일이 없어 원본으로 선택할 수 없습니다.'; $r.Tag = '링크 상태'; $r.Sub = '구성 파일 없음 · 원본으로 선택 불가'; $r.Lvl = 'bad'; continue }
-                if ($script:sd.BaseGame -and $r.An -and $r.An.Game -and ((Get-NormPath $r.An.Game) -ieq (Get-NormPath $script:sd.BaseGame))) { $r.NoPick = $true; $r.NoPickMsg = '원본과 같은 클라이언트는 대상으로 선택할 수 없습니다.'; $r.Tag = '원본과 동일'; $r.Lvl = 'bad'; continue }
-                if ($r.Flat) { $r.Tag = '구조 다름'; $r.Sub = '3.7 Steam 구조 · 선택 불가'; $r.Lvl = 'bad'; continue }
+                if ($script:sd.NeedReal -and $r.An -and $r.An.Linked) { $r.NoPick = $true; $r.Tag = '링크 클라이언트'; $r.Sub = '실제 파일 없음 · 원본으로 선택 불가'; $r.Lvl = 'done'; continue }
+                if ($script:sd.BaseGame -and $r.An -and $r.An.Game -and ((Get-NormPath $r.An.Game) -ieq (Get-NormPath $script:sd.BaseGame))) { $r.NoPick = $true; $r.Tag = '원본과 동일'; $r.Sub = '원본으로 지정한 클라이언트'; $r.Lvl = 'bad'; continue }
+                if ($r.Flat) { $r.Tag = '구조 다름'; $r.Sub = '구버전 Steam · 작업 불가'; $r.Lvl = 'bad'; continue }
+                if ($r.An -and $r.An.Part) {
+                    $r.Tag = '부분 복구 필요'; $r.Lvl = 'seed'; $r.Sub = '파일 일부만 있음 · 런처 [게임 복구] 진행'
+                    if ($script:sd.NeedReal) { $r.NoPick = $true }
+                    if ($noSrc) { $r.NoPick = $true; $r.NoPickMsg = $noSrcMsg; $r.Sub = $noSrcSub }
+                    if ($srcBad) { $r.NoPick = $true; $r.NoPickMsg = $srcBadMsg; $r.Sub = '원본의 버전 정보 확인 불가' }
+                    continue
+                }
+                if ($r.An -and $r.An.Seed) {
+                    if ($script:sd.NeedReal) { $r.NoPick = $true; $r.Tag = '클라이언트 없음'; $r.Lvl = 'bad'; $r.Sub = '원본으로 선택 불가'; continue }
+                    $r.Tag = '이식 가능'; $r.Lvl = 'seed'; $r.Sub = '원본 클라이언트 기반의 이식·링크 가능'
+                    if ($noSrc) { $r.NoPick = $true; $r.NoPickMsg = $noSrcMsg; $r.Sub = $noSrcSub }
+                    if ($srcBad) { $r.NoPick = $true; $r.NoPickMsg = $srcBadMsg; $r.Sub = '원본의 버전 정보 확인 불가' }
+                    continue
+                }
+                # 클라이언트 파일은 있는데 버전을 읽지 못함: 미확인 (원본 지정과 관계없이 선택 불가)
+                if ($r.An -and $r.An.Exe -and -not $r.An.Ver) {
+                    $why = Get-VersionWhy $r.An.Game
+                    $r.Tag = '미확인'; $r.Lvl = 'bad'; $r.Sub = ('버전 정보 확인 불가 · ' + $why); $r.NoPick = $true
+                    $r.NoPickMsg = ("버전 정보를 확인할 수 없습니다 ({0}).`r`n`r`n확인할 파일:`r`n{1}" -f $why, (Join-Path $r.An.Game 'launcherDownloadConfig.json'))
+                    continue
+                }
                 if ($tied.Count -gt 1 -and ($tied -contains $r)) { $r.Tag = '원본 후보'; $r.Lvl = 'src'; $r.Sub = '최신 버전·용량 동일 (직접 선택)'; if ([int]$linkedBy[$r.Root] -gt 0) { $r.Sub = ('최신 버전·연결 {0}개 동일 (직접 선택)' -f [int]$linkedBy[$r.Root]) }; continue }
                 if ($rec -and $r -eq $rec) { $r.Role = 'src'; $r.Tag = '원본 추천'; $r.Lvl = 'src'; $r.Sub = '최신 버전'; if ([int]$linkedBy[$r.Root] -gt 0) { $r.Sub = ('최신 버전 · {0}개 클라이언트가 연결 중' -f [int]$linkedBy[$r.Root]) }; continue }
-                if ($script:sd.BaseGame -and $r.An -and $r.An.Game -and (Test-AlreadyLinked $script:sd.BaseGame $r.An.Game @(Get-SelectedKeys))) {
-                    $r.Tag = '링크 구성됨'; $r.Sub = '이미 링크된 상태로 진행 불필요'; $r.Lvl = 'done'; continue
+                if ($script:sd.BaseGame -and $r.An -and $r.An.Game) {
+                    $lp = Get-LinkProgress $script:sd.BaseGame $r.An.Game
+                    if ($lp.Any) {
+                        $r.Lvl = 'done'
+                        if ($lp.Done) {
+                            $r.Tag = '링크 구성됨'; $r.Sub = '링크됨'
+                            if ($lp.Quality.Count -gt 0) { $r.Sub = ('링크됨 (' + ($lp.Quality -join ', ') + ')') }
+                        } else {
+                            $r.Tag = '일부 링크됨'
+                            $pt = @()
+                            if ($lp.Missing.Count -gt 0) { $pt += ('남은 폴더: ' + ($lp.Missing -join ', ')) }
+                            if ($lp.NeedQuality) { $pt += '품질 리소스 링크 필요' }
+                            $r.Sub = ($pt -join ' · ')
+                        }
+                        continue
+                    }
                 }
                 if ($script:sd.BaseGame) {
                     $cv = Get-LinkCompat $script:sd.BaseGame $r.An.Game @('Paks', 'UHD')
                     $r.Lvl = $cv.Level
-                    if ($cv.Level -eq 'ok' -or $cv.Level -eq 'patch') { $r.Tag = '링크 가능'; $r.Sub = '' }
-                    elseif ($cv.Level -eq 'minor') { $r.Tag = '링크 불가'; $r.Sub = $cv.Short }
-                    else { $r.Tag = '확인 불가'; $r.Sub = '' }
-                } elseif ($r.An -and $r.An.Ver) { $r.Tag = '버전 ' + $r.An.Ver.Content; $r.Lvl = 'ok' }
+                    if ($cv.Level -eq 'ok' -or $cv.Level -eq 'patch') { $r.Tag = '링크 가능'; $r.Sub = ''; if ($cv.Level -eq 'patch') { $r.Sub = '패치 버전이 다르므로 업데이트 권장' } }
+                    elseif ($cv.Level -eq 'minor') {
+                        $sv2 = Get-ClientVersion $script:sd.BaseGame
+                        if ($sv2 -and $r.An.Ver -and (([version]$r.An.Ver.Content) -lt ([version]$sv2.Content))) {
+                            $r.Tag = '업데이트 필요'; $r.Sub = '런처 실행하여 업데이트'
+                            $r.NoPickMsg = ("대상 클라이언트의 버전이 원본보다 낮습니다 (원본 {0} · 대상 {1}).`r`n해당 런처를 실행하여 최신 버전으로 업데이트한 뒤 다시 선택하세요." -f $sv2.Content, $r.An.Ver.Content)
+                        } else {
+                            $r.Tag = '링크 불가'; $r.Sub = '원본보다 최신 버전'
+                            $r.NoPickMsg = "대상이 원본보다 최신 버전입니다.`r`n원본 런처를 실행하여 먼저 업데이트하거나, 최신 쪽을 원본으로 선택하세요."
+                        }
+                        $r.NoPick = $true
+                    }
+                    else {
+                        # 대상은 버전을 읽었으므로 원본 쪽을 읽지 못한 경우
+                        $why = Get-VersionWhy $script:sd.BaseGame
+                        $r.Tag = '미확인'; $r.Lvl = 'bad'; $r.Sub = '원본의 버전 정보 확인 불가'; $r.NoPick = $true
+                        $r.NoPickMsg = ("원본의 버전 정보를 확인할 수 없습니다 ({0}).`r`n`r`n확인할 파일:`r`n{1}" -f $why, (Join-Path $script:sd.BaseGame 'launcherDownloadConfig.json'))
+                    }
+                } elseif ($r.An -and $r.An.Ver) {
+                    $r.Tag = '버전 ' + $r.An.Ver.Content; $r.Lvl = 'ok'
+                    if ($noSrc) { $r.Lvl = 'bad'; $r.Sub = $noSrcSub; $r.NoPick = $true; $r.NoPickMsg = $noSrcMsg }
+                }
             }
             return
         }
@@ -3097,7 +4346,7 @@ function Show-ScanDialog([string]$Mode = 'register', [string]$BaseGame = '', [bo
         if ($script:sd.Seen.ContainsKey($key)) { return $false }
         $script:sd.Seen[$key] = $true
         $already = [bool]($script:clients | Where-Object { (Get-NormPath $_.Path) -ieq (Get-NormPath $st.Root) })
-        $an = Get-ClientAnalysis $st.Root
+        $an = Get-ClientAnalysis $st.Root $script:sd.BaseGame
         $row = @{ Root = $st.Root; An = $an; Already = $already; Flat = $false; NoPick = $false; Checked = $false; Role = ''; Tag = ''; Sub = ''; Lvl = '' }
         $left = & $script:sdSlotsLeft
         $cnt = @($script:sd.Rows | Where-Object { $_.Checked }).Count
@@ -3110,20 +4359,36 @@ function Show-ScanDialog([string]$Mode = 'register', [string]$BaseGame = '', [bo
 
     # ---- 목록 그리기
     $script:sdRowH = (S 78); $script:sdHeadH = (S 28)
+    # 스크롤바 위치 계산: 오른쪽에 스크롤바 자리를 항상 비워 두고(경로 칸을 줄여 확보), 넘칠 때만 그림
+    $script:sdScroll = {
+        param($s)
+        $view = $s.ClientSize.Height - $script:sdHeadH
+        $total = @($script:sd.Rows).Count * $script:sdRowH
+        $max = [Math]::Max(0, $total - $view)
+        $trackY = $script:sdHeadH + (S 6); $trackH = [Math]::Max(1, $view - (S 12))
+        $thumbH = $trackH; $thumbY = $trackY
+        if ($max -gt 0) {
+            $thumbH = [Math]::Min($trackH, [Math]::Max((S 34), [int]($trackH * $view / $total)))
+            $sc = [Math]::Min($max, [Math]::Max(0, [int]$script:sd.Scroll))
+            $thumbY = $trackY + [int](($trackH - $thumbH) * $sc / $max)
+        }
+        return @{ Max = $max; View = $view; TrackX = ($s.ClientSize.Width - (S 14)); TrackY = $trackY; TrackH = $trackH; ThumbY = $thumbY; ThumbH = $thumbH }
+    }
     $sd.List.Add_Paint({
         param($s, $e)
         $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'
-        $w = $s.ClientSize.Width
-        $x0 = @((S 8), (S 40), (S 400), (S 530), (S 706))
+        $fw = $s.ClientSize.Width
+        $w = $fw - (S 18)
+        $x0 = @((S 8), (S 40), (S 372), (S 502), (S 678))
         $heads = @('', '경로', '확인', '링크 대상 폴더 상태', '제안')
         for ($i = 1; $i -lt 5; $i++) { Draw-Txt $g $heads[$i] $fontSmall (Rc $x0[$i] 0 ($w - $x0[$i]) $script:sdHeadH) $cSub }
-        $pen = New-Object Drawing.Pen($cBorder, 1); $g.DrawLine($pen, 0, $script:sdHeadH, $w, $script:sdHeadH); $pen.Dispose()
+        $pen = New-Object Drawing.Pen($cBorder, 1); $g.DrawLine($pen, 0, $script:sdHeadH, $fw, $script:sdHeadH); $pen.Dispose()
         $rows = @($script:sd.Rows)
         if ($rows.Count -eq 0) {
-            Draw-Txt $g '[탐색 시작]을 누르면 찾은 클라이언트가 여기에 표시됩니다.' $fontBase (Rc 0 $script:sdHeadH $w ($s.ClientSize.Height - $script:sdHeadH)) $cSub 'HorizontalCenter,VerticalCenter,SingleLine'
+            Draw-Txt $g '[탐색 시작]을 누르면 찾은 클라이언트가 여기에 표시됩니다.' $fontBase (Rc 0 $script:sdHeadH $fw ($s.ClientSize.Height - $script:sdHeadH)) $cSub 'HorizontalCenter,VerticalCenter,SingleLine'
             return
         }
-        $g.SetClip((Rc 0 $script:sdHeadH $w ($s.ClientSize.Height - $script:sdHeadH)))
+        $g.SetClip((Rc 0 $script:sdHeadH $fw ($s.ClientSize.Height - $script:sdHeadH)))
         for ($i = 0; $i -lt $rows.Count; $i++) {
             $r = $rows[$i]
             $y = $script:sdHeadH + $i * $script:sdRowH - $script:sd.Scroll
@@ -3132,16 +4397,15 @@ function Show-ScanDialog([string]$Mode = 'register', [string]$BaseGame = '', [bo
             $isFlat = [bool]$r.Flat
             $tc = $cText; if ($dim) { $tc = (RGB 170 170 170) }
             if ($script:sd.Mode -eq 'pick') { Draw-Radio $g (Rc $x0[0] ($y + (S 29)) (S 20) (S 20)) ([bool]$r.Checked) ([bool]($isFlat -or $r.NoPick)) }
-            elseif ($dim -or $isFlat) { Draw-Round $g (Rc $x0[0] ($y + (S 29)) (S 18) (S 18)) (RGB 242 242 242) (RGB 205 205 205) 1.5 $false (S 4) }
+            elseif ($dim -or $isFlat -or $r.NoPick) { Draw-Round $g (Rc $x0[0] ($y + (S 29)) (S 18) (S 18)) (RGB 242 242 242) (RGB 205 205 205) 1.5 $false (S 4) }
             else { Draw-Check $g (Rc $x0[0] ($y + (S 29)) (S 18) (S 18)) ([bool]$r.Checked) }
             Draw-Txt $g $r.Root $fontPath (Rc $x0[1] ($y + (S 6)) ($x0[2] - $x0[1] - (S 10)) ($script:sdRowH - (S 12))) $tc 'Left,Top,WordBreak,EndEllipsis'
             $an = $r.An
             if ($isFlat) {
-                Draw-Txt $g '3.7 Steam 구조 (launcher.exe 없음)' $fontBase (Rc $x0[2] ($y + (S 6)) ($x0[4] - $x0[2] - (S 10)) ($script:sdRowH - (S 12))) $cSub 'Left,Top,WordBreak,EndEllipsis'
-            } elseif (-not $dim) {
+                Draw-Txt $g '구버전 Steam 구조 (launcher.exe 없음)' $fontBase (Rc $x0[2] ($y + (S 6)) ($x0[4] - $x0[2] - (S 10)) ($script:sdRowH - (S 12))) $cSub 'Left,Top,WordBreak,EndEllipsis'
+            } elseif ($an) {
                 $l1 = '✖ 런처'; $c1 = $cDanger; if ($an.Launcher) { $l1 = '✔ 런처'; $c1 = $cOk }
-                $l2 = '✖ 구성 파일'; $c2 = $cDanger; if ($an.Exe) { $l2 = '✔ 구성 파일'; $c2 = $cOk }
-                if ($an.Exe -and $an.Linked) { $l2 = '✖ 구성 파일'; $c2 = $cDanger }
+                $l2 = '✖ 클라이언트'; $c2 = $cDanger; if ($an.Exe) { $l2 = '✔ 클라이언트'; $c2 = $cOk }
                 Draw-Txt $g $l1 $fontBase (Rc $x0[2] ($y + (S 6)) ($x0[3] - $x0[2] - (S 10)) (S 22)) $c1
                 Draw-Txt $g $l2 $fontBase (Rc $x0[2] ($y + (S 28)) ($x0[3] - $x0[2] - (S 10)) (S 22)) $c2
                 $vt = '버전  –'; if ($an.Ver) { $vt = '버전  ' + $an.Ver.Content }
@@ -3154,17 +4418,29 @@ function Show-ScanDialog([string]$Mode = 'register', [string]$BaseGame = '', [bo
             $rt = Rc $x0[4] ($y + (S 10)) (S 100) (S 22)
             if ($r.Lvl) {
                 $pc = (RGB 150 150 150)
-                if ($r.Lvl -eq 'src') { $pc = $cAccent } elseif ($r.Lvl -eq 'ok') { $pc = $cOk } elseif ($r.Lvl -eq 'patch') { $pc = (RGB 200 120 0) } elseif ($r.Lvl -eq 'minor') { $pc = $cDanger } elseif ($r.Lvl -eq 'done') { $pc = (RGB 0 122 140) }
+                if ($r.Lvl -eq 'src') { $pc = $cAccent } elseif ($r.Lvl -eq 'ok') { $pc = $cOk } elseif ($r.Lvl -eq 'patch') { $pc = (RGB 200 120 0) } elseif ($r.Lvl -eq 'minor') { $pc = $cDanger } elseif ($r.Lvl -eq 'done') { $pc = (RGB 0 122 140) } elseif ($r.Lvl -eq 'seed') { $pc = (RGB 124 77 190) }
                 Draw-Round $g $rt $pc $null 1 $false (S 11)
             }
             elseif ($r.Already) { Draw-Round $g $rt (RGB 150 150 150) $null 1 $false (S 11) }
             elseif ($r.Role -eq 'src') { Draw-Round $g $rt $cAccent $null 1 $false (S 11) }
             else { Draw-Round $g $rt $cOk $null 1 $false (S 11) }
-            Draw-Txt $g $r.Tag $fontSmall $rt ([Drawing.Color]::White) 'HorizontalCenter,VerticalCenter,SingleLine'
+            Draw-Txt $g $r.Tag $fontSmall (Rc ($rt.X + 1) $rt.Y $rt.Width $rt.Height) ([Drawing.Color]::White) 'HorizontalCenter,VerticalCenter,SingleLine,NoPadding'
             if ($r.Sub) { Draw-Txt $g $r.Sub $fontSmall (Rc $x0[4] ($y + (S 36)) ($w - $x0[4] - (S 4)) (S 40)) $cSub 'Left,Top,WordBreak,EndEllipsis' }
-            $pen = New-Object Drawing.Pen((RGB 240 240 240), 1); $g.DrawLine($pen, 0, ($y + $script:sdRowH - 1), $w, ($y + $script:sdRowH - 1)); $pen.Dispose()
+            $pen = New-Object Drawing.Pen((RGB 240 240 240), 1); $g.DrawLine($pen, 0, ($y + $script:sdRowH - 1), $fw, ($y + $script:sdRowH - 1)); $pen.Dispose()
         }
         $g.ResetClip()
+        # 글자(GDI)는 클립 영역을 무시하고 머리글 위로 넘어올 수 있으므로, 머리글을 마지막에 다시 그림
+        $hb = New-Object Drawing.SolidBrush($s.BackColor); $g.FillRectangle($hb, 0, 0, $fw, $script:sdHeadH); $hb.Dispose()
+        for ($i = 1; $i -lt 5; $i++) { Draw-Txt $g $heads[$i] $fontSmall (Rc $x0[$i] 0 ($w - $x0[$i]) $script:sdHeadH) $cSub }
+        $pen = New-Object Drawing.Pen($cBorder, 1); $g.DrawLine($pen, 0, $script:sdHeadH, $fw, $script:sdHeadH); $pen.Dispose()
+        # 스크롤바 (목록이 보이는 영역을 넘칠 때만)
+        $sg = & $script:sdScroll $s
+        if ($sg.Max -gt 0) {
+            $tw = S 8
+            $tb = New-Object Drawing.SolidBrush((RGB 238 240 244)); $tp = Get-RoundPath $sg.TrackX $sg.TrackY $tw $sg.TrackH ($tw / 2); $g.FillPath($tb, $tp); $tb.Dispose(); $tp.Dispose()
+            $thc = RGB 175 182 195; if ($script:sd.SbDrag) { $thc = RGB 130 140 158 }
+            $hb2 = New-Object Drawing.SolidBrush($thc); $hp = Get-RoundPath $sg.TrackX $sg.ThumbY $tw $sg.ThumbH ($tw / 2); $g.FillPath($hb2, $hp); $hb2.Dispose(); $hp.Dispose()
+        }
     })
     $sd.List.Add_MouseEnter({ param($s, $e) $s.Focus() })
     $sd.List.Add_MouseWheel({
@@ -3176,23 +4452,54 @@ function Show-ScanDialog([string]$Mode = 'register', [string]$BaseGame = '', [bo
         $script:sd.Scroll = [Math]::Min($max, [Math]::Max(0, $v))
         $s.Invalidate()
     })
+    # 스크롤바 조작: 막대를 끌거나, 빈 트랙을 눌러 한 화면씩 이동
+    $sd.List.Add_MouseDown({
+        param($s, $e)
+        $sg = & $script:sdScroll $s
+        if ($sg.Max -le 0 -or $e.X -lt ($sg.TrackX - (S 6))) { return }
+        if ($e.Y -ge $sg.ThumbY -and $e.Y -le ($sg.ThumbY + $sg.ThumbH)) {
+            $script:sd.SbDrag = $true; $script:sd.SbY = $e.Y; $script:sd.SbS = [int]$script:sd.Scroll
+        } elseif ($e.Y -ge $sg.TrackY -and $e.Y -le ($sg.TrackY + $sg.TrackH)) {
+            $step = [Math]::Max($script:sdRowH, $sg.View - $script:sdRowH)
+            if ($e.Y -lt $sg.ThumbY) { $v = [int]$script:sd.Scroll - $step } else { $v = [int]$script:sd.Scroll + $step }
+            $script:sd.Scroll = [Math]::Min($sg.Max, [Math]::Max(0, $v))
+        }
+        $s.Invalidate()
+    })
+    $sd.List.Add_MouseMove({
+        param($s, $e)
+        if (-not $script:sd.SbDrag) { return }
+        $sg = & $script:sdScroll $s
+        $span = $sg.TrackH - $sg.ThumbH
+        if ($sg.Max -le 0 -or $span -le 0) { return }
+        $v = [int]($script:sd.SbS + ($e.Y - $script:sd.SbY) * $sg.Max / $span)
+        $script:sd.Scroll = [Math]::Min($sg.Max, [Math]::Max(0, $v))
+        $s.Invalidate()
+    })
+    $sd.List.Add_MouseUp({ param($s, $e) if ($script:sd.SbDrag) { $script:sd.SbDrag = $false; $s.Invalidate() } })
     $sd.List.Add_MouseClick({
         param($s, $e)
         if ($e.Y -lt $script:sdHeadH) { return }
+        if ($e.X -ge ($s.ClientSize.Width - (S 20))) { return }
         $i = [int][Math]::Floor(($e.Y - $script:sdHeadH + $script:sd.Scroll) / $script:sdRowH)
         if ($i -lt 0 -or $i -ge $script:sd.Rows.Count) { return }
         $r = $script:sd.Rows[$i]
-        if ($r.Flat) { $script:sd.LblMsg.Text = '3.7 Steam 구조는 링크할 수 없어 선택할 수 없습니다.'; return }
+        if ($r.Flat) { $script:sd.LblMsg.Text = '구버전 Steam 구조입니다. Steam에서 업데이트한 뒤 사용하세요.'; return }
         if ($r.NoPick) { $script:sd.LblMsg.Text = [string]$r.NoPickMsg; return }
         if ($script:sd.Mode -eq 'pick') {
             foreach ($o in $script:sd.Rows) { $o.Checked = $false }
             $r.Checked = $true; $script:sd.LblMsg.Text = ''; $script:sd.List.Invalidate(); return
         }
-        if ($r.Already) { $script:sd.LblMsg.Text = '이미 등록된 클라이언트입니다.'; return }
+        if ($r.Already) { $script:sd.LblMsg.Text = ''; return }
         if (-not $r.Checked) {
             $left = & $script:sdSlotsLeft
             $cnt = @($script:sd.Rows | Where-Object { $_.Checked }).Count
             if ($cnt -ge $left) { $script:sd.LblMsg.Text = ('최대 {0}개까지만 등록할 수 있어 더 선택할 수 없습니다.' -f $MaxClients); return }
+        }
+        if (-not $r.Checked -and $r.Caution -and ($r.CautionOk -ne $r.Caution)) {
+            $ca = [Windows.Forms.MessageBox]::Show($script:sd.Form, [string]$r.Caution, [string]$r.Tag, 'YesNo', 'Warning', 'Button2')
+            if ($ca -ne 'Yes') { return }
+            $r.CautionOk = $r.Caution
         }
         $r.Checked = -not $r.Checked
         $script:sd.LblMsg.Text = ''
@@ -3206,6 +4513,14 @@ function Show-ScanDialog([string]$Mode = 'register', [string]$BaseGame = '', [bo
         if ($script:sd.Scanning) { $_.Cancel = $true; $script:sd.Cancel = $true; $script:sd.CloseAfter = $true }
     })
 
+    if ($sd.BtnClr) {
+        $sd.BtnClr.Add_Click({
+            foreach ($r in $script:sd.Rows) { $r.Checked = $false }
+            $script:sd.LblMsg.Text = ''
+            & $script:sdUpdateTexts
+        })
+    }
+
     $sd.BtnReg.Add_Click({
         if ($script:sd.Mode -eq 'pick') {
             $pk = @($script:sd.Rows | Where-Object { $_.Checked -and -not $_.Flat -and -not $_.NoPick })
@@ -3216,7 +4531,7 @@ function Show-ScanDialog([string]$Mode = 'register', [string]$BaseGame = '', [bo
         if ($sel.Count -eq 0) { $script:sd.LblMsg.Text = '등록할 항목을 체크해 주세요.'; return }
         $sug = @{}
         foreach ($r in $sel) { $sug[$r.Root] = $r.Role }
-        $ok = Start-Register @($sel | ForEach-Object { $_.Root }) $sug
+        $ok = Start-Register @($sel | ForEach-Object { $_.Root }) $sug $true
         if ($ok) { $script:sd.Registered = $true; $script:sd.Form.Close() }
     })
 
@@ -3236,12 +4551,13 @@ function Show-ScanDialog([string]$Mode = 'register', [string]$BaseGame = '', [bo
         try {
             if (-not $script:sd.Cancel) {
                 $script:sd.LblStatus.Text = '흔한 위치 확인 중...'; [Windows.Forms.Application]::DoEvents()
-                foreach ($p in @(Find-ClientsQuick)) { [void](& $script:sdAddRow $p) }
+                foreach ($p in @(Find-ClientsQuick $roots)) { [void](& $script:sdAddRow $p) }
             }
             if (-not $script:sd.Cancel) {
                 $script:sd.LblStatus.Text = 'Steam 라이브러리 확인 중...'; [Windows.Forms.Application]::DoEvents()
-                foreach ($p in @(Find-ClientsSteam)) { [void](& $script:sdAddRow $p) }
-                foreach ($p in @(Find-ClientsSteamFlat)) { [void](& $script:sdAddRow $p $true) }
+                # 선택한 드라이브 안에 있는 Steam 설치만 결과에 넣음
+                foreach ($p in @(Find-ClientsSteam)) { if ($roots | Where-Object { $_ -ieq [IO.Path]::GetPathRoot($p) }) { [void](& $script:sdAddRow $p) } }
+                foreach ($p in @(Find-ClientsSteamFlat)) { if ($roots | Where-Object { $_ -ieq [IO.Path]::GetPathRoot($p) }) { [void](& $script:sdAddRow $p $true) } }
             }
             if ($doD -and -not $script:sd.Cancel) {
                 [void](Find-ClientsDeep -Roots $roots -Keywords $kws -MaxDepth $depthSel `
@@ -3256,7 +4572,7 @@ function Show-ScanDialog([string]$Mode = 'register', [string]$BaseGame = '', [bo
         $script:sd.Prog.Visible = $false
         $script:sd.BtnStart.Enabled = $true; $script:sd.BtnReg.Enabled = $true;; $script:sd.BtnStop.Enabled = $false
         $head = '완료'; if ($err) { $head = '오류: ' + $err } elseif ($cancelled) { $head = '중지됨' }
-        $nt = ''; if (-not $doD) { $nt = ' (드라이브가 선택되지 않아 정밀 탐색은 생략)' }
+        $nt = ''; if ($roots.Count -eq 0) { $nt = ' (드라이브가 선택되지 않아 탐색 생략)' } elseif (-not $doD) { $nt = ' (탐색 키워드가 없어 정밀 탐색은 생략)' }
         $script:sd.LblStatus.Text = ('{0} · {1}개 발견{2}' -f $head, $script:sd.Rows.Count, $nt)
         & $script:sdUpdateTexts
     })
@@ -3292,13 +4608,28 @@ function Handle-SlotHit($h) {
         'guide' { Show-GuideWindow $false }
         'add' {
             if ($script:clients.Count -ge $MaxClients) { Show-Warn ('클라이언트는 최대 {0}개까지 등록할 수 있습니다. 먼저 [제거]로 자리를 비워 주세요.' -f $MaxClients) '알림'; return }
+            $script:pendingGuide = $false
             [void](Show-ScanDialog)
+            if ($script:pendingGuide) { $script:pendingGuide = $false; $script:gwSeenUpd = $true; Show-GuideWindow $true 'update' }
         }
         'edit' {
             $c = $script:clients[$h.I]
             $taken = @($script:clients | Where-Object { $_.Path -ne $c.Path } | ForEach-Object { $_.Name })
-            $n = Show-NameDialog '이름 수정' ('[{0}] 의 새 이름' -f $c.Name) $c.Name $taken
-            if ($n) { $old = $c.Name; $c.Name = $n; [void](Save-AppSettings); Log ('[이름 변경] {0} → {1}' -f $old, $n); Refresh-Manage }
+            $er = Show-ClientEditDialog $c $taken
+            if ($er) {
+                $dupK = $false
+                if ($er.Kind) { foreach ($o in $script:clients) { if ($o.Path -ne $c.Path -and $o.Kind -eq $er.Kind) { $dupK = $true } } }
+                if ($dupK) {
+                    $dkm = (('종류 [{0}] 은(는) 이미 다른 클라이언트에 지정되어 있습니다.' + "`r`n" + '같은 종류가 둘 이상이면 서로 섞일 수 있습니다. 그래도 적용할까요?') -f $er.Kind)
+                    if ([Windows.Forms.MessageBox]::Show($dkm, '종류 중복', 'YesNo', 'Warning', 'Button2') -ne 'Yes') { return }
+                }
+                $old = $c.Name; $oldK = [string]$c.Kind
+                $c.Name = $er.Name; $c.Kind = $er.Kind
+                [void](Save-AppSettings)
+                if ($old -ne $er.Name) { Log ('[이름 변경] {0} → {1}' -f $old, $er.Name) }
+                if ($oldK -ne $er.Kind) { Log ('[종류 변경] {0}: {1} → {2}' -f $er.Name, $(if ($oldK) { $oldK } else { '미지정' }), $(if ($er.Kind) { $er.Kind } else { '미지정' })) }
+                Refresh-Manage
+            }
         }
         'remove' {
             $c = $script:clients[$h.I]
@@ -3343,6 +4674,17 @@ $cardClients.Add_DragDrop({
 
 function Handle-GridHit($h) {
     $keep = $null
+    if ($h.A -eq 'launch') {
+        $lcol = $script:grid.Cols[$h.I]
+        $lst = Get-State $lcol.Path
+        $le = ''; if ($lst) { $le = Join-Path $lst.Root 'launcher.exe' }
+        if (-not $le -or -not (Test-Path -LiteralPath $le -PathType Leaf)) { Show-Warn ("런처(launcher.exe)를 찾을 수 없습니다:`r`n" + $le); return }
+        try { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"' + $le + '"') -ErrorAction Stop }
+        catch { Show-Warn ("런처를 실행하지 못했습니다:`r`n" + $_.Exception.Message); return }
+        Log ('[런처 실행] ' + $le)
+        return
+    }
+    if ($h.A -eq 'blocked') { $lblSelInfo.Text = '등록된 원본보다 더 높은 버전입니다. 원본을 업데이트해야 합니다.'; return }
     switch ($h.A) {
         'cell' {
             $k = "$($h.I)|$($h.K)"
@@ -3382,8 +4724,8 @@ function Get-ItemByKey([string]$key) {
 }
 
 function Test-ManageSafety($ss, $targets, [bool]$needSymlink) {
-    if (-not $ss) { return '원본 클라이언트의 구성 파일을 찾을 수 없습니다.' }
-    return (Test-LinkSafety $ss $targets $needSymlink)
+    if (-not $ss) { return '원본 클라이언트를 찾을 수 없습니다.' }
+    return (Test-LinkSafety $ss $targets $needSymlink $true)
 }
 
 function Invoke-ManageConnect {
@@ -3400,7 +4742,12 @@ function Invoke-ManageConnect {
         $ds = Get-State $cl.Path
         $plan = @()
         if ($ds -and $ss) { $plan = @(Build-Plan $ss.Game $ds.Game $keys) }
-        $targets += @{ Name = $cl.Name; Path = $cl.Path; Ds = $ds; Keys = $keys; Plan = $plan }
+        $bp = $null
+        if ($ds -and $ss -and $ds.Exe -and $ss.Exe) {
+            $bp = Get-BundlePlan $ss.Game $ds.Game $keys
+            if ($bp.Error) { Show-Warn ('[' + $cl.Name + '] ' + $bp.Error); return }
+        }
+        $targets += @{ Name = $cl.Name; Path = $cl.Path; Ds = $ds; Keys = $keys; Plan = $plan; BP = $bp }
     }
     $err = Test-ManageSafety $ss $targets $true
     if ($err) { Show-Warn $err; return }
@@ -3408,10 +4755,12 @@ function Invoke-ManageConnect {
     foreach ($t in $targets) {
         $lines += ('[{0}]' -f $t.Name)
         foreach ($a in $t.Plan) { $lines += ('- ' + (Get-PlanText $a)); if ($a.Kind -ne 'skip') { $todo++ } }
+        if ($t.BP -and @($t.BP.Edits).Count -gt 0) { $lines += '[설정 파일]'; $lines += $t.BP.Lines; $todo++ }
+        $lines += @(Get-DiffWarnLines $t.Plan $ss.Game $t.Ds.Game)
         $lines += ''
     }
     $vnotes = ''
-    foreach ($t in $targets) { $vnotes += (Get-VersionNote $ss.Game $t.Ds.Game $t.Name $t.Keys) }
+    foreach ($t in $targets) { $vnotes += (Get-VersionNote $ss.Game $t.Ds.Game $t.Name $t.Keys $true) }
     if ($vnotes) { $lines += $vnotes }
     if ($todo -eq 0) { Show-Warn '할 일이 없습니다 (선택한 칸이 모두 이미 연결되어 있음).' '알림'; return }
     $msg = ("원본 [{0}] 기준으로 다음 링크를 구성합니다.`r`n`r`n{1}`r`n기존 폴더는 삭제하지 않고 _backup 으로 보관합니다.`r`n계속할까요?" -f $srcCl.Name, ($lines -join "`r`n"))
@@ -3433,6 +4782,9 @@ function Invoke-ManageConnect {
                 [Windows.Forms.Application]::DoEvents()
                 if (Invoke-PlanItem $a $stamp) { if ($a.Kind -ne 'skip') { $nOk++ } } else { $okAll = $false; $nBad++; break }
             }
+            if ($nBad -eq 0 -and $t.BP -and @($t.BP.Edits).Count -gt 0) {
+                try { Invoke-BundlePlan $t.BP $null $null } catch { Log ('  [실패] 런처 설정 파일: ' + $_.Exception.Message); $okAll = $false; $nBad++ }
+            }
             $mark = '✔'; if ($nBad -gt 0) { $mark = '✖' }
             $sumLines += ('  {0} {1}: 성공 {2} / 전체 {3}{4}' -f $mark, $t.Name, $nOk, $nTotal, $(if ($nBad -gt 0) { ' (실패로 중단)' } else { '' }))
         }
@@ -3442,6 +4794,19 @@ function Invoke-ManageConnect {
         if ($okAll) {
             Log '완료: 링크 구성이 끝났습니다. 각 런처에서 런처 실행과 [게임 복구]를 확인한 뒤 [백업 삭제]를 눌러 주세요.'
             Log $SyncGuide
+            foreach ($t in $targets) {
+                $le = Join-Path $t.Ds.Root 'launcher.exe'
+                if (-not (Test-Path -LiteralPath $le -PathType Leaf)) { continue }
+                # 원본보다 낮은 버전을 연결한 경우: 런처를 먼저 실행하면 원본이 손상될 수 있으므로 [업데이트 후 동기화]를 먼저 안내하고 런처 실행은 묻지 않는다
+                $syncSt = 'ok'
+                try { $syncSt = Get-SyncState (Get-ClientVersion $ss.Game) (Get-ClientVersion $t.Ds.Game) } catch { }
+                if ($syncSt -eq 'need') {
+                    [void][Windows.Forms.MessageBox]::Show(("[{0}] 원본과 버전이 달라 '동기화 필요' 상태입니다.`r`n`r`n런처를 실행하지 말고, 먼저 [업데이트 후 동기화]를 진행해 주세요.`r`n런처를 먼저 실행하면 원본이 손상될 수 있습니다." -f $t.Name), '업데이트 후 동기화', 'OK', 'Warning')
+                    continue
+                }
+                $qa = [Windows.Forms.MessageBox]::Show(("[{0}] 런처를 지금 실행할까요?`r`n실행 후 [게임 복구]까지 진행해 무결성 검사를 마치세요." -f $t.Name), '런처 실행', 'YesNo', 'Question', 'Button2')
+                if ($qa -eq 'Yes') { Start-Process explorer.exe -ArgumentList ('"' + $le + '"'); Log ('[런처 실행] ' + $le) }
+            }
         }
         else { Log '일부 항목에서 실패했습니다. 로그를 확인하세요.' }
     } catch { Log ('오류: ' + $_.Exception.Message) }
@@ -3456,11 +4821,11 @@ function Show-UnlinkDialog($plan, [string]$title, [string]$summary) {
     $lb = New-DlgLabel $summary $cText; $lb.AutoEllipsis = $false
     [void](Add-DlgControl $dg $lb 16 12 568 44)
     $ud.Opts = @(
-        @{ Key = 'restore'; Title = '백업 복원'; Desc = '백업으로부터 복원합니다.'; Ok = [bool]$plan.RestoreOk; Info = [string]$plan.RestoreInfo },
-        @{ Key = 'copy';    Title = '원본에서 복사'; Desc = '원본으로부터 복사합니다.'; Ok = [bool]$plan.CopyOk; Info = [string]$plan.CopyInfo },
-        @{ Key = 'empty';   Title = '비워두기'; Desc = '런처에서 새로 받아야 합니다.'; Ok = $true; Info = '링크만 삭제하고 빈 폴더로 둡니다' }
+        @{ Key = 'restore'; Title = '백업 복원'; Desc = '백업으로부터 복원합니다. 백업이 구버전이면 버전 표기 문제가 생길 수 있습니다.'; Ok = [bool]$plan.RestoreOk; Info = [string]$plan.RestoreInfo },
+        @{ Key = 'copy';    Title = '원본에서 복사 (권장)'; Desc = '링크 해제 후 빈 파일·폴더를 원본 클라이언트로부터 복사하여 채웁니다.'; Ok = [bool]$plan.CopyOk; Info = [string]$plan.CopyInfo },
+        @{ Key = 'empty';   Title = '비워두기'; Desc = '복원하지 않고 삭제 상태를 유지합니다.'; Ok = $true; Info = $(if (@($plan.Acts | Where-Object { @('Paks','Resources') -contains $_.Act.It.Key }).Count -gt 0) { '링크·폴더를 삭제합니다 (Paks·Resources는 빈 폴더로 둡니다)' } else { '순정으로 직접 받을 경우, 또는 삭제할 경우 선택' }) }
     )
-    if ($plan.RestoreOk) { $ud.Sel = 'restore' }
+    if ($plan.CopyOk) { $ud.Sel = 'copy' } elseif ($plan.RestoreOk) { $ud.Sel = 'restore' }
     $pn = New-Object Windows.Forms.Panel
     $pn.BackColor = $cBg; Set-DoubleBuffered $pn
     [void](Add-DlgControl $dg $pn 16 64 568 300)
@@ -3491,9 +4856,9 @@ function Show-UnlinkDialog($plan, [string]$title, [string]$summary) {
             if ($h.R.Contains($e.X, $e.Y) -and $h.Ok) { $script:ud.Sel = $h.Key; $script:ud.BtnRun.Enabled = $true; $s.Invalidate(); return }
         }
     })
-    $ud.BtnRun = New-Object Windows.Forms.Button; $ud.BtnRun.Text = '진행'
+    $ud.BtnRun = New-Button '진행' $true $dg
     $ud.BtnRun.Enabled = [bool]$ud.Sel
-    $btnX = New-Object Windows.Forms.Button; $btnX.Text = '닫기'
+    $btnX = New-Button '닫기' $false $dg
     [void](Add-DlgControl $dg $ud.BtnRun 364 376 108 38)
     [void](Add-DlgControl $dg $btnX 484 376 100 38)
     $dg.CancelButton = $btnX
@@ -3515,7 +4880,7 @@ function New-CopyProgress {
     [void](Add-DlgControl $pf $ps.Bar 16 44 508 20)
     $ps.L2 = New-DlgLabel '' $cSub; $ps.L2.AutoEllipsis = $true; $ps.L2.Font = $fontSmall
     [void](Add-DlgControl $pf $ps.L2 16 72 508 22)
-    $bc = New-Object Windows.Forms.Button; $bc.Text = '취소'
+    $bc = New-Button '취소' $false $pf
     [void](Add-DlgControl $pf $bc 424 108 100 36)
     $bc.Add_Click({ $script:cpCancel = $true; $this.Enabled = $false; $this.Text = '취소 중...' })
     $pf.Show($form)
@@ -3562,13 +4927,35 @@ function Invoke-UnlinkCells($cells, [string]$tag, [string]$title) {
         switch ($mode) {
             'restore' { $s += ('링크 해제 → 백업 복원 (' + (Split-Path $a.Bak -Leaf) + ')') }
             'copy'    { $s += ('링크 해제 → 원본에서 복사 ({0})' -f (Format-Size $pa.Bytes)) }
-            'empty'   { $s += '링크 해제 → 빈 폴더' }
+            'empty'   { if (@('UHD','HD','SD') -contains $a.It.Key) { $s += '링크 해제 (폴더 없음)' } else { $s += '링크 해제 → 빈 폴더' } }
         }
         $lines += $s
     }
+    $willEmpty = @()
+    foreach ($pa in $plan.Acts) {
+        $a = $pa.Act
+        if (@('UHD','HD','SD') -notcontains $a.It.Key) { continue }
+        if ($mode -eq 'empty' -or ($mode -eq 'restore' -and $a.Bak -and (Test-DirEmpty $a.Bak))) { $willEmpty += $a }
+    }
+    $brPlans = @()
+    foreach ($gm in ($willEmpty | ForEach-Object { $_.Game } | Select-Object -Unique)) {
+        $nm = @($willEmpty | Where-Object { $_.Game -eq $gm } | ForEach-Object { $_.It.Key })
+        $bpl = Get-BundleRemovePlan $gm $nm
+        if ($bpl.Error) { Show-Warn $bpl.Error; return }
+        if (@($bpl.Edits).Count -gt 0) {
+            $brPlans += $bpl
+            $cn = @($willEmpty | Where-Object { $_.Game -eq $gm })[0].Name
+            $lines += ('[{0}] 설정 파일' -f $cn); $lines += $bpl.Lines
+        }
+    }
     $note = ''
-    if ($mode -eq 'copy') { $note = "`r`n`r`n복사는 시간이 걸릴 수 있습니다 (총 {0}). 복사가 끝나고 확인한 뒤에 링크를 바꾸며, 도중에 취소하면 링크는 그대로 유지됩니다." -f (Format-Size $plan.Bytes) }
-    if ($mode -eq 'empty') { $note = "`r`n`r`n해당 폴더는 비어 있게 되므로 런처에서 [게임 복구] 등으로 새로 받아야 합니다 (Paks·UHD는 용량이 커서 오래 걸립니다)." }
+    if ($mode -eq 'copy') { $note = "`r`n`r`n복사는 시간이 걸릴 수 있습니다 (총 {0}). 복사가 끝나고 확인한 뒤에 링크를 바꾸며, 도중에 취소하면 링크는 그대로 유지됩니다.`r`n링크 해제가 완료되면 런처의 [게임 복구]로 무결성 검사를 해주세요." -f (Format-Size $plan.Bytes) }
+    if ($mode -eq 'empty') {
+        $bigNames = @($plan.Acts | ForEach-Object { $_.Act.It.Key } | Where-Object { @('Paks','UHD','HD','SD') -contains $_ } | Select-Object -Unique)
+        $bigTxt = ''; if ($bigNames.Count -gt 0) { $bigTxt = (' ({0}는 용량이 커서 오래 걸립니다)' -f ($bigNames -join '·')) }
+        $note = "`r`n`r`n해당 리소스는 없어지므로 필요하면 런처에서 [게임 복구] 등으로 새로 받아야 합니다" + $bigTxt + '.'
+    }
+    if ($mode -eq 'restore') { $note = "`r`n`r`n백업 리소스가 구버전일 경우 버전 표기와 리소스 버전이 일치하지 않는 문제가 생길 수 있습니다.`r`n링크 해제가 완료되면 런처의 [게임 복구]를 통해 해결할 수 있습니다." }
     $ans = [Windows.Forms.MessageBox]::Show(("다음 항목을 처리합니다.`r`n`r`n" + ($lines -join "`r`n") + $note + "`r`n`r`n계속할까요?"), $title, 'YesNo', 'Warning', 'Button2')
     if ($ans -ne 'Yes') { return }
 
@@ -3592,8 +4979,7 @@ function Invoke-UnlinkCells($cells, [string]$tag, [string]$title) {
                     }
                     'empty' {
                         [IO.Directory]::Delete($a.Path); Log ('  [링크 해제] [{0}] {1}' -f $a.Name, $a.Path)
-                        [void][IO.Directory]::CreateDirectory($a.Path)
-                        Log ('  [빈 폴더 생성] ' + $a.Path)
+                        if (@('UHD','HD','SD') -notcontains $a.It.Key) { [void][IO.Directory]::CreateDirectory($a.Path); Log ('  [빈 폴더 생성] ' + $a.Path) }
                     }
                     'copy' {
                         $tmp = $a.Path + '_copying_' + $stamp
@@ -3620,7 +5006,19 @@ function Invoke-UnlinkCells($cells, [string]$tag, [string]$title) {
                 }
             } catch { Log ('  [실패] {0}: {1}' -f $a.It.Sub, $_.Exception.Message); $stop = $true }
         }
+        $jsonFail = @()
+        if (-not $stop) {
+            foreach ($gm in ($willEmpty | ForEach-Object { $_.Game } | Select-Object -Unique)) {
+                $nm = @($willEmpty | Where-Object { $_.Game -eq $gm -and (-not (Test-Path -LiteralPath $_.Path) -or (Test-DirEmpty $_.Path)) } | ForEach-Object { $_.It.Key })
+                if ($nm.Count -eq 0) { continue }
+                $bpl = Get-BundleRemovePlan $gm $nm
+                if ($bpl.Error) { Log ('  [실패] ' + ($bpl.Error -replace "`r`n", ' ')); $jsonFail += ($gm + '  (설정 파일을 읽지 못함)') }
+                elseif (@($bpl.Edits).Count -gt 0) { try { Invoke-BundleRemove $bpl } catch { Log ('  [실패] 런처 설정 파일: ' + $_.Exception.Message); $jsonFail += $gm } }
+                foreach ($sq in @($bpl.Skipped)) { Log ('  [실패] {0} 번들을 설정에서 제거하지 못했습니다.' -f $sq); $jsonFail += ($gm + '  (' + $sq + ' 번들 제거 못함)') }
+            }
+        }
         Log ('[{0}] 끝' -f $title)
+        if ($jsonFail.Count -gt 0) { Show-Warn ("링크 해제는 끝났지만 런처 설정 정리에 실패했습니다.`r`n폴더 상태와 런처 설정(launcherDownloadConfig.json)이 맞지 않을 수 있습니다. 진행 로그를 확인해 주세요.`r`n`r`n" + ($jsonFail -join "`r`n")) }
     } catch { Log ('오류: ' + $_.Exception.Message) }
     finally {
         if ($ps) { try { $ps.Form.Close(); $ps.Form.Dispose() } catch { } }
@@ -3693,7 +5091,7 @@ function Get-SyncWork($srcCl) {
     $o = @{ Ok = $false; Msg = ''; Ss = $null; Sv = $null; SrcVer = $null; Work = @(); Notes = @(); Dirs = @() }
     if (-not $srcCl) { $o.Msg = '원본 클라이언트가 지정되어 있지 않습니다.'; return $o }
     $ss = Get-State $srcCl.Path
-    if (-not $ss -or -not $ss.Exe) { $o.Msg = ("원본에 구성 파일이 없습니다:`r`n" + $srcCl.Path); return $o }
+    if (-not $ss -or -not $ss.Exe) { $o.Msg = ("원본에 클라이언트가 없습니다:`r`n" + $srcCl.Path); return $o }
     $sv = Get-SyncSource $ss.Game
     $srcVer = Get-ClientVersion $ss.Game
     if ($sv.Bundles.Count -eq 0 -or -not $srcVer) { $o.Msg = '원본의 버전을 읽을 수 없습니다 (Wuthering Waves Game\launcherDownloadConfig.json).'; return $o }
@@ -3701,7 +5099,7 @@ function Get-SyncWork($srcCl) {
     foreach ($cl in $script:clients) {
         if ($cl.Role -eq 'src') { continue }
         $ds = Get-State $cl.Path
-        if (-not $ds -or -not $ds.Exe) { $o.Notes += ('[{0}] 구성 파일이 없어 건너뜀' -f $cl.Name); continue }
+        if (-not $ds -or -not $ds.Exe) { $o.Notes += ('[{0}] 클라이언트가 없어 건너뜀' -f $cl.Name); continue }
         if (-not (Test-LinkedToSource $ss.Game $ds.Game)) {
             $o.Notes += ('[{0}] Paks / Resources가 원본에 링크되어 있지 않아 건너뜀 (링크가 아니면 런처에서 직접 업데이트)' -f $cl.Name)
             continue
@@ -3744,13 +5142,13 @@ function Update-SyncDialog {
         elseif ($w.Edits.Count -gt 0 -or $w.Pre.Dirs.Count -gt 0) { $todo++ }
         if ($w.Hold.Dirs.Count -gt 0) { $holds++ }
     }
-    if ($holds -eq 0 -or $todo -gt 0 -or $probs -gt 0) { $sd.Ok2 = $false }
+    if ($holds -eq 0 -or $todo -gt 0 -or $probs -gt 0) { $sd.Ok2 = $false; $sd.Launched = $false }
     $sd.B1.Enabled = ($todo -gt 0)
     $sd.B2.Enabled = ($holds -gt 0 -and $todo -eq 0 -and $probs -eq 0 -and -not $sd.Ok2)
     $sd.B3.Enabled = ($holds -gt 0 -and $sd.Ok2)
-    if ($sd.Ok2) { $sd.B2.Text = '확인 완료' } else { $sd.B2.Text = '런처 실행 › 게임 복구 › 게임 실행' }
+    if ($sd.Ok2) { $sd.B2.Text = '확인 완료' } elseif ($sd.Launched) { $sd.B2.Text = '게임 복구 · 게임 실행 확인 완료' } else { $sd.B2.Text = '런처 실행 › 게임 복구 › 게임 실행' }
     $sd.B2.Invalidate()
-    if ($sd.Cap) { $sd.Cap.Visible = $sd.B2.Enabled }
+    if ($sd.Cap) { $sd.Cap.Visible = $sd.B2.Enabled; if ($sd.Launched) { $sd.Cap.Text = '( 런처에서 진행 후 정상이면 눌러주세요 )' } else { $sd.Cap.Text = '( 눌러서 링크 런처를 실행합니다 )' } }
     # '다음 할 일' 안내 줄
     $names = @(); $unres = @(); $firstProb = ''
     foreach ($w in $sd.Data.Work) {
@@ -3765,7 +5163,7 @@ function Update-SyncDialog {
     } elseif ($todo -gt 0) {
         $gd.Lines = @('다음 할 일  ·  모든 런처/게임을 종료한 뒤 ① 동기화 진행을 누르세요.')
     } elseif ($holds -gt 0 -and -not $sd.Ok2) {
-        $gd.Lines = @('다음 할 일  ·  링크 런처에서 [게임 복구]를 실행하고 게임 실행을 확인하세요 (클라이언트별로 하나씩).', '모두 정상이면 ② 를 누르세요.')
+        $gd.Lines = @('다음 할 일  ·  링크 런처에서 [게임 복구]를 실행하고 게임 실행을 확인하세요 (클라이언트별로 하나씩).', '② 를 누르면 링크 런처를 실행합니다. 모두 정상이면 다시 ② 를 누르세요.')
     } elseif ($holds -gt 0) {
         $gd.Lines = @('다음 할 일  ·  확인이 끝났습니다. ③ 삭제로 백업을 지우면 마무리됩니다.')
     } elseif ($sd.Data.Work.Count -eq 0) {
@@ -3801,12 +5199,14 @@ function Invoke-SyncStep1 {
                 continue
             }
             $bkRoot = Join-Path $w.Ds.Game ('backup_sync_' + $stamp)
+            $applied = New-Object Collections.ArrayList
             try {
                 foreach ($e in $w.Edits) {
                     $f = Join-Path $w.Ds.Game $e.Rel
                     $bk = Join-Path (Join-Path $bkRoot 'settings') $e.Rel
                     New-Item -ItemType Directory -Force -Path (Split-Path $bk -Parent) | Out-Null
                     Copy-Item -LiteralPath $f -Destination $bk -Force
+                    [void]$applied.Add(@{ File = $f; Bak = $bk })
                     Write-JsonText $f $e.NewText $e.Bom
                     Log ('  [수정] {0}' -f $e.Rel)
                     foreach ($c in $e.Changes) { Log ('      ' + $c) }
@@ -3819,7 +5219,19 @@ function Invoke-SyncStep1 {
                 }
                 $chk = @(Test-SyncEdits $w.Ds.Game $d.Sv)
                 if ($chk.Count -gt 0) { $okAll = $false; foreach ($pm in $chk) { Log ('  [검증 실패] ' + $pm) } }
-            } catch { $okAll = $false; Log ('  [오류] ' + $_.Exception.Message) }
+            } catch {
+                $okAll = $false; Log ('  [오류] ' + $_.Exception.Message)
+                # 이 클라이언트에서 이미 수정한 설정 파일을 백업에서 되돌려, 일부만 바뀐 상태가 남지 않게 함
+                if ($applied.Count -gt 0) {
+                    $rb = 0; $rbFail = 0
+                    for ($ri = $applied.Count - 1; $ri -ge 0; $ri--) {
+                        try { Copy-Item -LiteralPath $applied[$ri].Bak -Destination $applied[$ri].File -Force -ErrorAction Stop; $rb++; Log ('  [복원] ' + $applied[$ri].File) }
+                        catch { $rbFail++; Log ('  [복원 실패] ' + $applied[$ri].File + ': ' + $_.Exception.Message) }
+                    }
+                    if ($rbFail -eq 0) { Log ('  [복원] 수정했던 설정 파일 {0}개를 수정 전 상태로 되돌렸습니다. 원인을 해결한 뒤 다시 진행하세요.' -f $rb) }
+                    else { Log ('  [주의] 일부 설정 파일을 되돌리지 못했습니다. 각 게임 폴더의 backup_sync_{0}\settings 의 파일로 직접 복원하세요.' -f $stamp) }
+                }
+            }
         }
         Log ('백업 위치: 각 게임 폴더의 backup_sync_{0}  (settings = 수정 전 설정값, predownload = 사전 다운로드)' -f $stamp)
         Log '[업데이트 후 동기화] 끝'
@@ -3831,6 +5243,26 @@ function Invoke-SyncStep1 {
 
 # ② 직접 진행 확인 (더미): 런처 게임 복구 + 게임 실행이 정상임을 사용자가 확인했다는 표시. ③을 연다.
 function Invoke-SyncStep2 {
+    # 첫 클릭: 링크 런처를 모두 실행한다 (탐색기를 거쳐 일반 권한으로 띄움). [예]를 눌러야만 다음 단계(확인)로 넘어간다.
+    if (-not $script:sd.Launched) {
+        $exes = @(); $miss = @(); $names = @()
+        # 이번 동기화로 backup_sync_* 보관분이 생긴 클라이언트만 대상 (이미 동기화돼 있던 클라이언트는 제외)
+        foreach ($w in @($script:sd.Data.Work | Where-Object { $_.Hold.Dirs.Count -gt 0 })) {
+            $le = Join-Path $w.Ds.Root 'launcher.exe'
+            if (Test-Path -LiteralPath $le -PathType Leaf) { $exes += $le; $names += ('- ' + $w.Cl.Name) } else { $miss += ('- ' + $w.Cl.Name + ': ' + $le) }
+        }
+        if ($miss.Count -gt 0) { Show-Warn ("런처(launcher.exe)를 찾을 수 없는 링크 클라이언트가 있습니다:`r`n" + ($miss -join "`r`n")); return }
+        if ($exes.Count -eq 0) { Show-Warn '실행할 링크 런처가 없습니다.'; return }
+        $qa = [Windows.Forms.MessageBox]::Show(("방금 동기화한 링크 런처를 모두 실행합니다.`r`n{0}`r`n`r`n실행 후 클라이언트마다 [게임 복구]까지 진행해 무결성 검사를 마치고, 게임 실행을 확인하세요.`r`n`r`n실행할까요?" -f ($names -join "`r`n")), '런처 실행', 'YesNo', 'Question', 'Button2')
+        if ($qa -ne 'Yes') { return }
+        foreach ($le in $exes) {
+            try { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"' + $le + '"') -ErrorAction Stop; Log ('[런처 실행] ' + $le) }
+            catch { Show-Warn ("런처를 실행하지 못했습니다:`r`n" + $le + "`r`n" + $_.Exception.Message); return }
+        }
+        $script:sd.Launched = $true
+        Update-SyncDialog
+        return
+    }
     $msg = "각 링크 런처에서 [게임 복구]를 마치고`r`n게임 실행이 정상인 것을 확인하셨나요?`r`n`r`n확인하면 [사전 다운로드 삭제]가 활성화됩니다."
     $ans = [Windows.Forms.MessageBox]::Show($msg, '직접 진행 확인', 'YesNo', 'Question', 'Button2')
     if ($ans -ne 'Yes') { return }
@@ -3882,7 +5314,7 @@ function Show-SyncDialog($srcCl) {
     $yStep = $yBar + $barH + 12
     $dh = $yStep + 52 + 32
     $dg = New-DialogForm '업데이트 후 동기화' $dw $dh
-    $script:sd = @{ Form = $dg; Src = $srcCl; Data = $data; Ok2 = $false }
+    $script:sd = @{ Form = $dg; Src = $srcCl; Data = $data; Ok2 = $false; Launched = $false }
     $sd = $script:sd
 
     $n1 = New-NoteBox $dg @('원본 런처/클라이언트 업데이트가 모두 완료된 후 사용하세요.', '올바른 작동을 위해 사전 업데이트는 원본 런처에서만 해주세요.') 'ⓘ' $cAccent (New-Object Drawing.Color) $null
@@ -4014,6 +5446,8 @@ $mBtnSync.Add_Click({ Invoke-ManageSync })
 
 $script:gw = $null
 $script:gwSeen = $false
+$script:gwSeenUpd = $false
+$script:gwMode = 'sync'
 
 # 한 줄 그리기: 글자 / 굵은 글자 / 배지를 이어 붙임. 조각 = @{T; F(굵게); K(배지 색 'r'|'g')}
 function Draw-Segs($g, $segs, [int]$x, [int]$y, $color) {
@@ -4042,16 +5476,23 @@ function Draw-Segs($g, $segs, [int]$x, [int]$y, $color) {
     }
 }
 
-function Show-GuideWindow([bool]$auto = $false) {
-    if ($script:gw -and -not $script:gw.IsDisposed) { $script:gw.Activate(); return }
+# mode: 'sync' = 동기화 필요가 생겼을 때의 순서 / 'update' = 원본보다 낮은 클라이언트를 새로 등록했을 때(아직 링크 전)의 순서
+function Show-GuideWindow([bool]$auto = $false, [string]$mode = 'sync') {
+    if ($script:gw -and -not $script:gw.IsDisposed) {
+        if ($script:gwMode -eq $mode) { $script:gw.Activate(); return }
+        $script:gw.Close()
+    }
+    $script:gwMode = $mode
     $gw = New-Object Windows.Forms.Form
-    $gw.Text = '업데이트 후 동기화 순서 안내'; $gw.Font = $fontBase; $gw.BackColor = $cBg; $gw.AutoScaleMode = 'None'
+    $gw.Text = $(if ($mode -eq 'update') { '링크 연결 후 업데이트 순서 안내' } else { '업데이트 후 동기화 순서 안내' }); $gw.Font = $fontBase; $gw.BackColor = $cBg; $gw.AutoScaleMode = 'None'
     $gw.FormBorderStyle = 'FixedSingle'; $gw.MaximizeBox = $false; $gw.MinimizeBox = $false
     $gw.ShowInTaskbar = $false; $gw.StartPosition = 'Manual'
     $cardY = 70; $cardH = 340
+    if ($mode -eq 'update') { $cardH = 386 }
     $gw.ClientSize = New-Object Drawing.Size((S 620), (S ($cardY + $cardH + 12 + 40 + 16)))
 
-    $nb = New-NoteBox $gw @('모든 업데이트는 원본을 우선 진행, 완료합니다.') '⚠' $cDanger (New-Object Drawing.Color) $null
+    $noteTxt = '모든 업데이트는 원본을 우선 진행, 완료합니다.'; if ($mode -eq 'update') { $noteTxt = '버전이 낮은 경우, 순서에 맞게 진행하여 원본의 버전에 맞추어야 합니다.' }
+    $nb = New-NoteBox $gw @($noteTxt) '⚠' $cDanger (New-Object Drawing.Color) $null
     $nb.SetBounds((S 16), (S 14), (S 588), (S 44))
 
     $pn = New-Object Windows.Forms.Panel
@@ -4066,6 +5507,7 @@ function Show-GuideWindow([bool]$auto = $false) {
         $line = New-Object Drawing.Pen((RGB 238 238 238), 1)
         $rowH = S 46
         $y = S 6
+        $btnIdx = 3
         $steps = @(
             @(@{ T = '원본의 사전 다운로드, 클라이언트 업데이트를 완료합니다.' }),
             @(@{ T = '동기화 필요'; K = 'r' }, @{ T = '가 떠 있는 경우 동기화가 필요합니다.'; A = $true }),
@@ -4073,21 +5515,31 @@ function Show-GuideWindow([bool]$auto = $false) {
             @(@{ T = '업데이트 후 동기화'; K = 'btn' }, @{ T = '를 열고 안내에 따라 진행합니다.'; A = $true }),
             @(@{ T = '동기화 필요'; K = 'r' }, @{ T = '가 모두'; A = $true }, @{ T = '동기화'; K = 'g' }, @{ T = '가 된 것을 확인합니다.'; A = $true })
         )
+        if ($script:gwMode -eq 'update') {
+            $btnIdx = 4
+            $steps = @(
+                @(@{ T = '업데이트'; K = 'r' }, @{ T = '배지는 원본보다 버전이 낮은 상태를 의미합니다.'; A = $true }),
+                @(@{ T = '[링크 연결]'; F = $true }, @{ T = '을 통해 먼저 원본과의 링크를 구성하세요.'; A = $true }),
+                @(@{ T = '[링크 연결]'; F = $true }, @{ T = '이 완료되면'; A = $true }, @{ T = '업데이트'; K = 'r' }, @{ T = '배지는'; A = $true }, @{ T = '동기화 필요'; K = 'r' }, @{ T = '배지로 바뀝니다.'; A = $true }),
+                @(@{ T = '모든 런처와 게임을 종료합니다.' }),
+                @(@{ T = '업데이트 후 동기화'; K = 'btn' }, @{ T = '를 열고 안내에 따라 진행합니다.'; A = $true }),
+                @(@{ T = '동기화 필요'; K = 'r' }, @{ T = '가 모두'; A = $true }, @{ T = '동기화'; K = 'g' }, @{ T = '가 된 것을 확인합니다.'; A = $true })
+            )
+        }
         $subs = @(
             @(@{ T = '각 링크(서브) 런처에서는 일반 업데이트가 아닌' }, @{ T = '[게임 복구]'; F = $true }, @{ T = '를 진행합니다.' }),
             @(@{ T = '[게임 복구]'; F = $true }, @{ T = '후 클라이언트를 실행하여 잔여 파일을 자동 업데이트합니다.' }),
             @(@{ T = '게임 실행이 모두 확인된 후 기존의 설정 및 백업 데이터를 정리합니다.' })
         )
-        for ($i = 0; $i -lt 5; $i++) {
+        for ($i = 0; $i -lt $steps.Count; $i++) {
             $h = $rowH
-            if ($i -eq 3) { $h = S 40 }
-            if ($i -gt 0 -and $i -ne 4) { $g.DrawLine($line, (S 16), $y, ($s.Width - (S 16)), $y) }
-            if ($i -eq 4) { $g.DrawLine($line, (S 16), $y, ($s.Width - (S 16)), $y) }
+            if ($i -eq $btnIdx) { $h = S 40 }
+            if ($i -gt 0) { $g.DrawLine($line, (S 16), $y, ($s.Width - (S 16)), $y) }
             Draw-Round $g (Rc (S 16) ($y + (S 10)) (S 26) (S 26)) $cAccent $null 1 $false (S 13)
             Draw-Txt $g ([string]($i + 1)) $fontSmall (Rc (S 16) ($y + (S 10)) (S 26) (S 26)) ([Drawing.Color]::White) 'HorizontalCenter,VerticalCenter,SingleLine'
             Draw-Segs $g $steps[$i] (S 54) ($y + (S 11)) $cText
             $y += $h
-            if ($i -eq 3) {
+            if ($i -eq $btnIdx) {
                 $bh = S 94
                 Draw-Round $g (Rc (S 16) ($y + (S 2)) ($s.Width - (S 32)) $bh) (RGB 246 248 251) (RGB 227 233 241) 1 $false (S 8)
                 for ($k = 0; $k -lt 3; $k++) {
@@ -4115,16 +5567,16 @@ function Show-GuideWindow([bool]$auto = $false) {
     $y = [Math]::Max($wa.Top, [Math]::Min($form.Top, $wa.Bottom - $gw.Height))
     $gw.Location = New-Object Drawing.Point($x, $y)
 
-    $gw.Add_FormClosed({ $script:gw = $null })
+    $gw.Add_FormClosed({ param($fs, $fe) if ([object]::ReferenceEquals($script:gw, $fs)) { $script:gw = $null } })
     $script:gw = $gw
     $gw.Show($form)
 }
 
 # 링크 관리 탭을 열 때(또는 새로 고칠 때) 동기화가 필요한 클라이언트가 있으면 안내 창을 한 번 띄움. 닫은 뒤에는 필요 항목이 사라졌다가 다시 생길 때까지 자동으로 띄우지 않음.
 function Update-GuideAuto {
-    if (Test-SyncNeeded) {
-        if (-not $script:gwSeen) { $script:gwSeen = $true; Show-GuideWindow $true }
-    } else { $script:gwSeen = $false }
+    # 한 번 실행하는 동안 종류별로 한 번만 띄운다 (프로그램을 다시 실행하면 조건이 남아 있는 한 다시 뜸)
+    if ((Test-SyncNeeded) -and -not $script:gwSeen) { $script:gwSeen = $true; Show-GuideWindow $true 'sync'; return }
+    if ((Test-UpdateNeeded) -and -not $script:gwSeenUpd) { $script:gwSeenUpd = $true; Show-GuideWindow $true 'update' }
 }
 
 # ---------------------------------------------------------------- 시작
@@ -4141,6 +5593,14 @@ $form.Add_ResizeEnd({ $form.Invalidate($true) })
 $form.Add_Shown({
     Fit-Window
     $script:shownDone = $true
+    # 종류가 비어 있는 등록 클라이언트는 KRLauncher 기록으로 자동 판정 (화면이 뜬 뒤 한 번만)
+    try {
+        $kindFilled = $false
+        foreach ($kc in $script:clients) {
+            if (-not $kc.Kind) { $kk = Get-KRKindAuto $kc.Path; if ($kk) { $kc.Kind = $kk; $kindFilled = $true } }
+        }
+        if ($kindFilled) { [void](Save-AppSettings); if ($script:tab -eq 'manage') { Refresh-Manage } }
+    } catch { }
     if (-not (Test-SymlinkAbility)) { Log '※ 심볼릭 링크를 만들 권한이 없습니다. 관리자 권한으로 실행해 주세요.' }
 })
 Do-Layout
